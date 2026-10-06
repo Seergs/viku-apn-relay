@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Seergs/viku-apn-relay/internal/server"
+	"github.com/Seergs/viku-apn-relay/internal/webhook"
 )
 
 const shutdownTimeout = 10 * time.Second
@@ -30,7 +31,7 @@ func run(logger *slog.Logger) error {
 
 	srv := &http.Server{
 		Addr:              addr,
-		Handler:           server.New(),
+		Handler:           server.New(webhook.NewHandler(webhook.NoRegistrations{}, webhook.DiscardDispatcher{})),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

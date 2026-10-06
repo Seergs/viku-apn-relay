@@ -6,8 +6,14 @@ import (
 	"testing"
 )
 
+type stubWebhooks struct{}
+
+func (stubWebhooks) ServeHTTP(w http.ResponseWriter, _ *http.Request) {
+	w.WriteHeader(http.StatusUnauthorized)
+}
+
 func TestRoutes(t *testing.T) {
-	h := New()
+	h := New(stubWebhooks{})
 
 	tests := []struct {
 		name       string
@@ -18,6 +24,8 @@ func TestRoutes(t *testing.T) {
 		{name: "healthz", method: http.MethodGet, path: "/healthz", wantStatus: http.StatusOK},
 		{name: "healthz wrong method", method: http.MethodPost, path: "/healthz", wantStatus: http.StatusMethodNotAllowed},
 		{name: "unknown route", method: http.MethodGet, path: "/nope", wantStatus: http.StatusNotFound},
+		{name: "webhook route", method: http.MethodPost, path: "/h/abc", wantStatus: http.StatusUnauthorized},
+		{name: "webhook wrong method", method: http.MethodGet, path: "/h/abc", wantStatus: http.StatusMethodNotAllowed},
 	}
 
 	for _, tt := range tests {

@@ -1,0 +1,10 @@
+pre-commit:
+  parallel: true
+  commands:
+    no-main-commit:
+      run: |
+        branch=$(git rev-parse --abbrev-ref HEAD)
+        if [ "$branch" = "main" ]; then
+          echo "direct commit to main is not allowed. Create a branch instead."
+          exit 1
+        fi

@@ -31,6 +31,8 @@ func TestRoutes(t *testing.T) {
 	}{
 		{name: "healthz", method: http.MethodGet, path: "/healthz", wantStatus: http.StatusOK},
 		{name: "healthz wrong method", method: http.MethodPost, path: "/healthz", wantStatus: http.StatusMethodNotAllowed},
+		{name: "privacy", method: http.MethodGet, path: "/privacy", wantStatus: http.StatusOK},
+		{name: "privacy wrong method", method: http.MethodPost, path: "/privacy", wantStatus: http.StatusMethodNotAllowed},
 		{name: "unknown route", method: http.MethodGet, path: "/nope", wantStatus: http.StatusNotFound},
 		{name: "webhook route", method: http.MethodPost, path: "/h/abc", wantStatus: http.StatusUnauthorized},
 		{name: "webhook wrong method", method: http.MethodGet, path: "/h/abc", wantStatus: http.StatusMethodNotAllowed},

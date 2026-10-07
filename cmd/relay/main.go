@@ -19,7 +19,7 @@ import (
 
 const (
 	shutdownTimeout = 10 * time.Second
-	defaultBaseURL  = "https://relay.viku.app"
+	defaultBaseURL  = "https://relay.viku.dev"
 	defaultDBPath   = "relay.db"
 )
 
@@ -80,15 +80,15 @@ func run(logger *slog.Logger) error {
 // does not start without them, so it never runs in a mode that drops pushes
 // silently.
 func newAPNsClient() (*apns.Client, error) {
-	keyPEM := os.Getenv("APNS_PRIVATE_KEY")
-	if keyPEM == "" {
-		return nil, errors.New("APNS_PRIVATE_KEY is not set")
+	keyPEM, err := loadAPNsKey()
+	if err != nil {
+		return nil, err
 	}
 	return apns.NewClient(apns.Config{
 		KeyID:    os.Getenv("APNS_KEY_ID"),
 		TeamID:   os.Getenv("APNS_TEAM_ID"),
 		Topic:    os.Getenv("APNS_TOPIC"),
-		KeyPEM:   []byte(keyPEM),
+		KeyPEM:   keyPEM,
 		Endpoint: envOr("APNS_ENDPOINT", apns.ProductionEndpoint),
 	})
 }
@@ -98,4 +98,21 @@ func envOr(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// loadAPNsKey returns the PEM-encoded APNs key. APNS_PRIVATE_KEY_FILE names a
+// file, which is how Docker secrets are mounted. APNS_PRIVATE_KEY carries the
+// key inline and is the fallback.
+func loadAPNsKey() ([]byte, error) {
+	if path := os.Getenv("APNS_PRIVATE_KEY_FILE"); path != "" {
+		key, err := os.ReadFile(path)
+		if err != nil {
+			return nil, errors.New("read APNS_PRIVATE_KEY_FILE")
+		}
+		return key, nil
+	}
+	if key := os.Getenv("APNS_PRIVATE_KEY"); key != "" {
+		return []byte(key), nil
+	}
+	return nil, errors.New("APNS_PRIVATE_KEY_FILE or APNS_PRIVATE_KEY must be set")
 }

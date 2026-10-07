@@ -1,0 +1,36 @@
+name: viku-apn-relay
+
+services:
+  relay:
+    image: ghcr.io/seergs/viku-apn-relay:${RELAY_TAG:-latest}
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      PUBLIC_BASE_URL: https://relay.viku.dev
+      APNS_PRIVATE_KEY_FILE: /run/secrets/apns_key
+    secrets:
+      - apns_key
+    # Only Caddy on the host reaches the relay. Nothing is exposed publicly.
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - relay-data:/data
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+secrets:
+  apns_key:
+    file: ./secrets/apns_key.p8
+
+volumes:
+  relay-data:

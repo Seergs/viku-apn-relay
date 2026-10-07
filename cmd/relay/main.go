@@ -9,11 +9,16 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Seergs/viku-apn-relay/internal/registration"
 	"github.com/Seergs/viku-apn-relay/internal/server"
 	"github.com/Seergs/viku-apn-relay/internal/webhook"
 )
 
-const shutdownTimeout = 10 * time.Second
+const (
+	shutdownTimeout = 10 * time.Second
+	defaultBaseURL  = "https://relay.viku.app"
+	defaultDBPath   = "relay.db"
+)
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
@@ -24,14 +29,20 @@ func main() {
 }
 
 func run(logger *slog.Logger) error {
-	addr := os.Getenv("ADDR")
-	if addr == "" {
-		addr = ":8080"
+	addr := envOr("ADDR", ":8080")
+
+	store, err := registration.Open(envOr("DATABASE_PATH", defaultDBPath))
+	if err != nil {
+		return err
 	}
+	defer store.Close()
+
+	api := registration.NewAPI(store, envOr("PUBLIC_BASE_URL", defaultBaseURL))
+	webhooks := webhook.NewHandler(store, webhook.DiscardDispatcher{})
 
 	srv := &http.Server{
 		Addr:              addr,
-		Handler:           server.New(webhook.NewHandler(webhook.NoRegistrations{}, webhook.DiscardDispatcher{})),
+		Handler:           server.New(webhooks, api),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
@@ -54,4 +65,11 @@ func run(logger *slog.Logger) error {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 	return srv.Shutdown(shutdownCtx)
+}
+
+func envOr(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
 }

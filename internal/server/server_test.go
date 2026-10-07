@@ -3,7 +3,10 @@ package server
 import (
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"testing"
+
+	"github.com/Seergs/viku-apn-relay/internal/registration"
 )
 
 type stubWebhooks struct{}
@@ -13,7 +16,12 @@ func (stubWebhooks) ServeHTTP(w http.ResponseWriter, _ *http.Request) {
 }
 
 func TestRoutes(t *testing.T) {
-	h := New(stubWebhooks{})
+	store, err := registration.Open(filepath.Join(t.TempDir(), "relay.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+	h := New(stubWebhooks{}, registration.NewAPI(store, "https://relay.test"))
 
 	tests := []struct {
 		name       string

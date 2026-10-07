@@ -6,7 +6,7 @@ services:
     restart: unless-stopped
     env_file: .env
     environment:
-      PUBLIC_BASE_URL: https://relay.viku.app
+      PUBLIC_BASE_URL: https://relay.viku.dev
       APNS_PRIVATE_KEY_FILE: /run/secrets/apns_key
     secrets:
       - apns_key

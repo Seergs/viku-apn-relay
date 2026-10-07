@@ -9,7 +9,7 @@ Notification service. Hosted by the Viku team.
 |---|---|---|
 | `ADDR` | `:8080` | Listen address. |
 | `DATABASE_PATH` | `relay.db` | SQLite database file. |
-| `PUBLIC_BASE_URL` | `https://relay.viku.app` | Origin used to build webhook URLs returned to devices. |
+| `PUBLIC_BASE_URL` | `https://relay.viku.dev` | Origin used to build webhook URLs returned to devices. |
 | `APNS_KEY_ID` | | Key id of the APNs auth key (`.p8`). Required. |
 | `APNS_TEAM_ID` | | Apple team id. Required. |
 | `APNS_TOPIC` | | App bundle id used as the APNs topic. Required. |
@@ -39,7 +39,7 @@ Response `200`:
 ```json
 {
   "id": "<opaque registration id>",
-  "webhook_url": "https://relay.viku.app/h/<opaque registration id>",
+  "webhook_url": "https://relay.viku.dev/h/<opaque registration id>",
   "management_token": "<keep in the Keychain; shown only in this response>"
 }
 ```
@@ -112,7 +112,7 @@ DATABASE_PATH=./relay.db ADDR=:8080 go run ./cmd/relay
 ## Deployment
 
 The relay runs as a Docker Compose stack on a VPS, behind the Caddy instance that already serves
-`relay.viku.app`. Caddy terminates TLS. The relay publishes its port on `127.0.0.1` only.
+`relay.viku.dev`. Caddy terminates TLS. The relay publishes its port on `127.0.0.1` only.
 
 Images are built by `.github/workflows/image.yml` and pushed to `ghcr.io/seergs/viku-apn-relay`.
 Tags: the commit SHA, the branch name, `latest` for `main`, and the semver for `v*` tags.
@@ -142,9 +142,9 @@ Tags: the commit SHA, the branch name, `latest` for `main`, and the semver for `
    docker compose logs -f relay
    ```
 
-4. Check it: `curl -s https://relay.viku.app/healthz` should return `200`.
+4. Check it: `curl -s https://relay.viku.dev/healthz` should return `200`.
 
-Caddy already proxies `relay.viku.app` to `127.0.0.1:8080` on the VPS; that config lives on the
+Caddy already proxies `relay.viku.dev` to `127.0.0.1:8080` on the VPS; that config lives on the
 server, not in this repo.
 
 ### Upgrade

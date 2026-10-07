@@ -19,7 +19,7 @@ import (
 
 const (
 	shutdownTimeout = 10 * time.Second
-	defaultBaseURL  = "https://relay.viku.app"
+	defaultBaseURL  = "https://relay.viku.dev"
 	defaultDBPath   = "relay.db"
 )
 

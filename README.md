@@ -108,3 +108,56 @@ DATABASE_PATH=./relay.db ADDR=:8080 go run ./cmd/relay
 ```
 
 `*.db` files are git-ignored.
+
+## Deployment
+
+The relay runs as a Docker Compose stack on a VPS, behind the Caddy instance that already serves
+`relay.viku.app`. Caddy terminates TLS. The relay publishes its port on `127.0.0.1` only.
+
+Images are built by `.github/workflows/image.yml` and pushed to `ghcr.io/seergs/viku-apn-relay`.
+Tags: the commit SHA, the branch name, `latest` for `main`, and the semver for `v*` tags.
+
+### First deploy
+
+1. Put the APNs key on the server. It is a secret, so it never goes in `.env`:
+
+   ```sh
+   mkdir -p ~/viku-apn-relay/secrets
+   # copy AuthKey_XXXX.p8 to ~/viku-apn-relay/secrets/apns_key.p8
+   sudo chown 65532:65532 ~/viku-apn-relay/secrets/apns_key.p8
+   chmod 400 ~/viku-apn-relay/secrets/apns_key.p8
+   ```
+
+   The container runs as uid 65532, so the key must be readable by that uid.
+
+2. Copy `compose.yaml` and `.env.example` to `~/viku-apn-relay/`. Then create `.env` from the
+   example and fill in `APNS_KEY_ID`, `APNS_TEAM_ID` and `APNS_TOPIC`.
+
+3. Add `deploy/Caddyfile.snippet` to the Caddyfile on the VPS and reload Caddy.
+
+4. Start the stack:
+
+   ```sh
+   cd ~/viku-apn-relay
+   docker compose pull
+   docker compose up -d
+   docker compose logs -f relay
+   ```
+
+5. Check it: `curl -s https://relay.viku.app/healthz` should return `200`.
+
+### Upgrade
+
+Pin `RELAY_TAG` in `.env` to the commit SHA you want, then:
+
+```sh
+docker compose pull && docker compose up -d
+```
+
+To roll back, set `RELAY_TAG` to the previous SHA and run the same commands.
+
+### Data
+
+The SQLite database lives in the named volume `relay-data`, mounted at `/data`. It holds
+registrations only. Back it up with `sqlite3 /data/relay.db ".backup"` from a copy of the volume,
+and encrypt the backup before it leaves the server.

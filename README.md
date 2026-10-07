@@ -133,9 +133,7 @@ Tags: the commit SHA, the branch name, `latest` for `main`, and the semver for `
 2. Copy `compose.yaml` and `.env.example` to `~/viku-apn-relay/`. Then create `.env` from the
    example and fill in `APNS_KEY_ID`, `APNS_TEAM_ID` and `APNS_TOPIC`.
 
-3. Add `deploy/Caddyfile.snippet` to the Caddyfile on the VPS and reload Caddy.
-
-4. Start the stack:
+3. Start the stack:
 
    ```sh
    cd ~/viku-apn-relay
@@ -144,7 +142,10 @@ Tags: the commit SHA, the branch name, `latest` for `main`, and the semver for `
    docker compose logs -f relay
    ```
 
-5. Check it: `curl -s https://relay.viku.app/healthz` should return `200`.
+4. Check it: `curl -s https://relay.viku.app/healthz` should return `200`.
+
+Caddy already proxies `relay.viku.app` to `127.0.0.1:8080` on the VPS; that config lives on the
+server, not in this repo.
 
 ### Upgrade
 

@@ -1,5 +1,5 @@
 // Package notify turns a verified Vikunja delivery into the content of a
-// push notification. It decides whether the delivery should be pushed at all.
+// push notification. It drops deliveries caused by the registered user.
 package notify
 
 import (
@@ -7,34 +7,58 @@ import (
 	"fmt"
 )
 
-// Event names the relay pushes. Project-level names come from earlier
-// research and still need checking against the Swagger spec of the target
-// Vikunja version (see docs/PUSH_NOTIFICATIONS.md).
+// Event names the relay pushes. They match the events Vikunja offers on a
+// project webhook.
 const (
-	TaskOverdue         = "task.overdue"
-	TaskReminderFired   = "task.reminder.fired"
-	TaskCreated         = "task.created"
-	TaskUpdated         = "task.updated"
-	TaskDeleted         = "task.deleted"
-	TaskAssigneeCreated = "task.assignee.created"
-	TaskAssigneeDeleted = "task.assignee.deleted"
-	TaskCommentCreated  = "task.comment.created"
+	ProjectDeleted        = "project.deleted"
+	ProjectSharedTeam     = "project.shared.team"
+	ProjectSharedUser     = "project.shared.user"
+	ProjectUpdated        = "project.updated"
+	TaskAssigneeCreated   = "task.assignee.created"
+	TaskAssigneeDeleted   = "task.assignee.deleted"
+	TaskAttachmentCreated = "task.attachment.created"
+	TaskAttachmentDeleted = "task.attachment.deleted"
+	TaskCommentCreated    = "task.comment.created"
+	TaskCommentDeleted    = "task.comment.deleted"
+	TaskCommentEdited     = "task.comment.edited"
+	TaskCreated           = "task.created"
+	TaskDeleted           = "task.deleted"
+	TaskOverdue           = "task.overdue"
+	TaskRelationCreated   = "task.relation.created"
+	TaskRelationDeleted   = "task.relation.deleted"
+	TaskReminderFired     = "task.reminder.fired"
+	TaskUpdated           = "task.updated"
+	TasksOverdue          = "tasks.overdue"
 )
 
+// userLevel events are sent for the signed-in user, not for a project, so the
+// self-action rule never drops them.
 var userLevel = map[string]bool{
 	TaskOverdue:       true,
 	TaskReminderFired: true,
+	TasksOverdue:      true,
 }
 
 var supported = map[string]bool{
-	TaskOverdue:         true,
-	TaskReminderFired:   true,
-	TaskCreated:         true,
-	TaskUpdated:         true,
-	TaskDeleted:         true,
-	TaskAssigneeCreated: true,
-	TaskAssigneeDeleted: true,
-	TaskCommentCreated:  true,
+	ProjectDeleted:        true,
+	ProjectSharedTeam:     true,
+	ProjectSharedUser:     true,
+	ProjectUpdated:        true,
+	TaskAssigneeCreated:   true,
+	TaskAssigneeDeleted:   true,
+	TaskAttachmentCreated: true,
+	TaskAttachmentDeleted: true,
+	TaskCommentCreated:    true,
+	TaskCommentDeleted:    true,
+	TaskCommentEdited:     true,
+	TaskCreated:           true,
+	TaskDeleted:           true,
+	TaskOverdue:           true,
+	TaskRelationCreated:   true,
+	TaskRelationDeleted:   true,
+	TaskReminderFired:     true,
+	TaskUpdated:           true,
+	TasksOverdue:          true,
 }
 
 // Notification is the minimal content sent to APNs.

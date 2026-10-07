@@ -48,7 +48,8 @@ func TestRegisterCreatesRegistration(t *testing.T) {
 		t.Fatalf("Register returned empty id or token: %+v", reg)
 	}
 
-	secret, ok := s.Secret(reg.ID)
+	target, ok := s.Lookup(reg.ID)
+	secret := target.Secret
 	if !ok || !bytes.Equal(secret, testSecret) {
 		t.Fatalf("Secret(%q) = %q, %v; want the registered secret", reg.ID, secret, ok)
 	}
@@ -112,7 +113,7 @@ func TestDeleteRemovesRow(t *testing.T) {
 	if rowCount(t, s) != 0 {
 		t.Fatalf("rows after delete = %d, want 0", rowCount(t, s))
 	}
-	if _, ok := s.Secret(reg.ID); ok {
+	if _, ok := s.Lookup(reg.ID); ok {
 		t.Fatal("Secret still resolves after delete")
 	}
 }

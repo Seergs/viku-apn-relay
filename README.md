@@ -10,6 +10,13 @@ Notification service. Hosted by the Viku team.
 | `ADDR` | `:8080` | Listen address. |
 | `DATABASE_PATH` | `relay.db` | SQLite database file. |
 | `PUBLIC_BASE_URL` | `https://relay.viku.app` | Origin used to build webhook URLs returned to devices. |
+| `APNS_KEY_ID` | | Key id of the APNs auth key (`.p8`). Required. |
+| `APNS_TEAM_ID` | | Apple team id. Required. |
+| `APNS_TOPIC` | | App bundle id used as the APNs topic. Required. |
+| `APNS_PRIVATE_KEY` | | Contents of the `.p8` key, PEM. Required. Keep it in a secret store, never in the repo. |
+| `APNS_ENDPOINT` | `https://api.push.apple.com` | Use `https://api.sandbox.push.apple.com` for development builds. |
+
+The relay refuses to start without the APNs settings.
 
 ## API
 
@@ -63,8 +70,10 @@ The end state is the same.
 
 ### `POST /h/{id}`
 
-Receives Vikunja webhook deliveries. Verifies `X-Vikunja-Signature` before doing anything else.
-Unknown ids and bad signatures both return `401`.
+Receives Vikunja webhook deliveries. Verifies `X-Vikunja-Signature` before doing anything else,
+then sends the matching push through APNs. Unknown ids and bad signatures both return `401`.
+A failed push returns `502` so the caller can retry. A device APNs reports as unregistered
+is removed from the store and returns `200`, because a retry cannot succeed.
 
 ## Storage
 

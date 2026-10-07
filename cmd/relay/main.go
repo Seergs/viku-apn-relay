@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"os"
@@ -9,6 +10,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Seergs/viku-apn-relay/internal/apns"
+	"github.com/Seergs/viku-apn-relay/internal/push"
 	"github.com/Seergs/viku-apn-relay/internal/registration"
 	"github.com/Seergs/viku-apn-relay/internal/server"
 	"github.com/Seergs/viku-apn-relay/internal/webhook"
@@ -31,6 +34,11 @@ func main() {
 func run(logger *slog.Logger) error {
 	addr := envOr("ADDR", ":8080")
 
+	apnsClient, err := newAPNsClient()
+	if err != nil {
+		return err
+	}
+
 	store, err := registration.Open(envOr("DATABASE_PATH", defaultDBPath))
 	if err != nil {
 		return err
@@ -38,7 +46,8 @@ func run(logger *slog.Logger) error {
 	defer store.Close()
 
 	api := registration.NewAPI(store, envOr("PUBLIC_BASE_URL", defaultBaseURL))
-	webhooks := webhook.NewHandler(store, webhook.DiscardDispatcher{})
+	dispatcher := push.NewDispatcher(apnsClient, store, logger)
+	webhooks := webhook.NewHandler(store, dispatcher)
 
 	srv := &http.Server{
 		Addr:              addr,
@@ -65,6 +74,23 @@ func run(logger *slog.Logger) error {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 	return srv.Shutdown(shutdownCtx)
+}
+
+// newAPNsClient reads the Apple credentials from the environment. The relay
+// does not start without them, so it never runs in a mode that drops pushes
+// silently.
+func newAPNsClient() (*apns.Client, error) {
+	keyPEM := os.Getenv("APNS_PRIVATE_KEY")
+	if keyPEM == "" {
+		return nil, errors.New("APNS_PRIVATE_KEY is not set")
+	}
+	return apns.NewClient(apns.Config{
+		KeyID:    os.Getenv("APNS_KEY_ID"),
+		TeamID:   os.Getenv("APNS_TEAM_ID"),
+		Topic:    os.Getenv("APNS_TOPIC"),
+		KeyPEM:   []byte(keyPEM),
+		Endpoint: envOr("APNS_ENDPOINT", apns.ProductionEndpoint),
+	})
 }
 
 func envOr(key, fallback string) string {

@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/Seergs/viku-apn-relay/internal/webhook"
 	_ "modernc.org/sqlite"
 )
 
@@ -131,15 +132,28 @@ func (s *Store) Delete(id, managementToken string) error {
 	return nil
 }
 
-// Secret returns the webhook secret for id. It implements
+// Lookup returns the delivery target for id. It implements
 // webhook.Registrations.
-func (s *Store) Secret(id string) ([]byte, bool) {
-	var secret []byte
-	err := s.db.QueryRow(`SELECT webhook_secret FROM registrations WHERE id = ?`, id).Scan(&secret)
+func (s *Store) Lookup(id string) (webhook.Target, bool) {
+	var t webhook.Target
+	err := s.db.QueryRow(
+		`SELECT webhook_secret, vikunja_user_id, apns_token FROM registrations WHERE id = ?`, id,
+	).Scan(&t.Secret, &t.VikunjaUserID, &t.APNsToken)
 	if err != nil {
-		return nil, false
+		return webhook.Target{}, false
 	}
-	return secret, true
+	t.ID = id
+	return t, true
+}
+
+// Remove deletes the registration without a management token. Only the push
+// dispatcher calls it, after APNs reports the device token as unregistered.
+func (s *Store) Remove(id string) error {
+	_, err := s.db.Exec(`DELETE FROM registrations WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("remove registration: %w", err)
+	}
+	return nil
 }
 
 // authorize returns ErrUnauthorized when id is unknown or the management token

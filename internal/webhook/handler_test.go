@@ -5,6 +5,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -14,19 +15,20 @@ import (
 // testSecret is a dummy value for unit tests. It is not a real webhook secret.
 var testSecret = []byte("unit-test-secret")
 
-type fakeRegistrations map[string][]byte
+type fakeRegistrations map[string]Target
 
-func (f fakeRegistrations) Secret(id string) ([]byte, bool) {
-	s, ok := f[id]
-	return s, ok
+func (f fakeRegistrations) Lookup(id string) (Target, bool) {
+	t, ok := f[id]
+	return t, ok
 }
 
 type recordingDispatcher struct {
 	bodies [][]byte
 }
 
-func (r *recordingDispatcher) Dispatch(body []byte) {
+func (r *recordingDispatcher) Dispatch(_ Target, body []byte) error {
 	r.bodies = append(r.bodies, body)
+	return nil
 }
 
 func sign(secret, body []byte) string {
@@ -52,7 +54,7 @@ func deliver(h http.Handler, id string, body []byte, signature string) *httptest
 
 func TestHandler(t *testing.T) {
 	body := []byte(`{"event_name":"task.created","time":"2026-01-01T00:00:00Z","data":{}}`)
-	regs := fakeRegistrations{"reg-1": testSecret}
+	regs := fakeRegistrations{"reg-1": {ID: "reg-1", Secret: testSecret}}
 
 	t.Run("valid signature dispatches body", func(t *testing.T) {
 		d := &recordingDispatcher{}
@@ -126,5 +128,21 @@ func TestPlaceholdersRejectEverything(t *testing.T) {
 
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+}
+
+type failingDispatcher struct{}
+
+func (failingDispatcher) Dispatch(Target, []byte) error {
+	return errors.New("push failed")
+}
+
+func TestHandlerReturnsBadGatewayWhenDispatchFails(t *testing.T) {
+	body := []byte(`{"event_name":"task.created","time":"2026-01-01T00:00:00Z","data":{}}`)
+	regs := fakeRegistrations{"reg-1": {ID: "reg-1", Secret: testSecret}}
+
+	rec := deliver(NewHandler(regs, failingDispatcher{}), "reg-1", body, sign(testSecret, body))
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadGateway)
 	}
 }

@@ -11,15 +11,24 @@ const (
 	maxBodyBytes    = 64 << 10
 )
 
-// Registrations maps an opaque registration id to its webhook secret.
-type Registrations interface {
-	// Secret returns the secret for id, or false if the id is unknown.
-	Secret(id string) ([]byte, bool)
+// Target is what the handler needs to know about a registered device.
+type Target struct {
+	ID            string
+	Secret        []byte
+	VikunjaUserID int64
+	APNsToken     string
 }
 
-// Dispatcher receives the raw body of a verified delivery.
+// Registrations maps an opaque registration id to its delivery target.
+type Registrations interface {
+	// Lookup returns the target for id, or false if the id is unknown.
+	Lookup(id string) (Target, bool)
+}
+
+// Dispatcher receives the raw body of a verified delivery for its target.
+// A non-nil error makes the handler answer 502 so the delivery can be retried.
 type Dispatcher interface {
-	Dispatch(body []byte)
+	Dispatch(t Target, body []byte) error
 }
 
 // Handler serves POST /h/{id}. It verifies each delivery before dispatching it.
@@ -28,7 +37,7 @@ type Handler struct {
 	dispatcher    Dispatcher
 }
 
-// NewHandler returns a Handler that looks up secrets in registrations and
+// NewHandler returns a Handler that looks up targets in registrations and
 // hands verified bodies to dispatcher.
 func NewHandler(registrations Registrations, dispatcher Dispatcher) *Handler {
 	return &Handler{registrations: registrations, dispatcher: dispatcher}
@@ -38,7 +47,7 @@ func NewHandler(registrations Registrations, dispatcher Dispatcher) *Handler {
 // and a bad signature get the same empty 401, so the caller cannot tell which
 // check failed.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	secret, ok := h.registrations.Secret(r.PathValue("id"))
+	target, ok := h.registrations.Lookup(r.PathValue("id"))
 	if !ok {
 		w.WriteHeader(http.StatusUnauthorized)
 		return
@@ -55,11 +64,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !Verify(secret, body, r.Header.Get(signatureHeader)) {
+	if !Verify(target.Secret, body, r.Header.Get(signatureHeader)) {
 		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}
 
-	h.dispatcher.Dispatch(body)
+	if err := h.dispatcher.Dispatch(target, body); err != nil {
+		w.WriteHeader(http.StatusBadGateway)
+		return
+	}
 	w.WriteHeader(http.StatusOK)
 }

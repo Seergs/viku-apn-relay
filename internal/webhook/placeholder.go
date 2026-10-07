@@ -1,17 +1,18 @@
 package webhook
 
-// NoRegistrations rejects every registration id. It stands in until the
-// registration store exists.
+// NoRegistrations rejects every registration id. It is used by tests that
+// need a registry with no entries.
 type NoRegistrations struct{}
 
-// Secret always reports the id as unknown.
-func (NoRegistrations) Secret(string) ([]byte, bool) {
-	return nil, false
+// Lookup always reports the id as unknown.
+func (NoRegistrations) Lookup(string) (Target, bool) {
+	return Target{}, false
 }
 
-// DiscardDispatcher drops verified deliveries. It stands in until the event
-// mapping stage exists.
+// DiscardDispatcher drops verified deliveries.
 type DiscardDispatcher struct{}
 
-// Dispatch ignores the body.
-func (DiscardDispatcher) Dispatch([]byte) {}
+// Dispatch ignores the target and the body.
+func (DiscardDispatcher) Dispatch(Target, []byte) error {
+	return nil
+}

@@ -2,7 +2,10 @@ module github.com/Seergs/viku-apn-relay
 
 go 1.27.1
 
-require modernc.org/sqlite v1.60.1
+require (
+	golang.org/x/time v0.16.0
+	modernc.org/sqlite v1.60.1
+)
 
 require (
 	github.com/dustin/go-humanize v1.0.1 // indirect

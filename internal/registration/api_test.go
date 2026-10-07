@@ -165,3 +165,33 @@ func TestRegisterStoresWebhookSecret(t *testing.T) {
 		t.Fatalf("Secret(%q) = %q, %v", resp.ID, secret, ok)
 	}
 }
+
+func TestRegisterIsRateLimitedPerIP(t *testing.T) {
+	mux, store := newTestAPI(t)
+
+	registerFrom := func(remoteAddr, apnsToken string) int {
+		body := `{"apns_token":"` + apnsToken + `","webhook_secret":"ssssssssssssssssssssssssssssssss","vikunja_user_id":1}`
+		req := httptest.NewRequest(http.MethodPost, "/v1/registrations", strings.NewReader(body))
+		req.RemoteAddr = remoteAddr
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		return rec.Code
+	}
+
+	for i := 0; i < registerRateBurst; i++ {
+		if code := registerFrom("203.0.113.9:1234", "burst-token-"+string(rune('a'+i))); code != http.StatusOK {
+			t.Fatalf("request %d within the burst = %d, want 200", i, code)
+		}
+	}
+	if code := registerFrom("203.0.113.9:1234", "over-the-burst"); code != http.StatusTooManyRequests {
+		t.Fatalf("request over the burst = %d, want 429", code)
+	}
+	if rowCount(t, store) != registerRateBurst {
+		t.Fatalf("rows = %d, want %d (the 429 must not create a row)", rowCount(t, store), registerRateBurst)
+	}
+
+	// A different client IP has its own budget.
+	if code := registerFrom("198.51.100.2:1234", "other-client"); code != http.StatusOK {
+		t.Fatalf("request from a different IP = %d, want 200", code)
+	}
+}

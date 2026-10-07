@@ -124,7 +124,7 @@ func TestUnregisterRemovesRegistration(t *testing.T) {
 	if rowCount(t, store) != 0 {
 		t.Fatal("row still present after unregister")
 	}
-	if _, ok := store.Secret(resp.ID); ok {
+	if _, ok := store.Lookup(resp.ID); ok {
 		t.Fatal("webhook secret still resolves after unregister")
 	}
 }
@@ -159,7 +159,8 @@ func TestRegisterStoresWebhookSecret(t *testing.T) {
 	mux, store := newTestAPI(t)
 	resp := register(t, mux, registerBody)
 
-	secret, ok := store.Secret(resp.ID)
+	target, ok := store.Lookup(resp.ID)
+	secret := target.Secret
 	if !ok || string(secret) != "ssssssssssssssssssssssssssssssss" {
 		t.Fatalf("Secret(%q) = %q, %v", resp.ID, secret, ok)
 	}

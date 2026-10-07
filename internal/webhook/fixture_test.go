@@ -32,7 +32,7 @@ func TestRecordedFixture(t *testing.T) {
 	}
 
 	d := &recordingDispatcher{}
-	h := NewHandler(fakeRegistrations{"fixture": []byte(secret)}, d)
+	h := NewHandler(fakeRegistrations{"fixture": {ID: "fixture", Secret: []byte(secret)}}, d)
 	rec := deliver(h, "fixture", body, signature)
 
 	if rec.Code != http.StatusOK {

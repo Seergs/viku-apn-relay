@@ -86,20 +86,25 @@ func TestMiddlewareReturnsTooManyRequests(t *testing.T) {
 
 func TestClientIPPrefersForwardedFor(t *testing.T) {
 	tests := []struct {
-		name       string
-		remoteAddr string
-		forwarded  string
-		want       string
+		name         string
+		remoteAddr   string
+		cfConnecting string
+		forwarded    string
+		want         string
 	}{
-		{"no proxy header", "203.0.113.5:4321", "", "203.0.113.5"},
-		{"single proxy hop", "127.0.0.1:4321", "198.51.100.7", "198.51.100.7"},
-		{"multiple proxy hops uses the original client", "127.0.0.1:4321", "198.51.100.7, 10.0.0.1", "198.51.100.7"},
-		{"malformed remote addr falls back unchanged", "not-an-addr", "", "not-an-addr"},
+		{"no proxy header", "203.0.113.5:4321", "", "", "203.0.113.5"},
+		{"single proxy hop", "127.0.0.1:4321", "", "198.51.100.7", "198.51.100.7"},
+		{"multiple proxy hops uses the original client", "127.0.0.1:4321", "", "198.51.100.7, 10.0.0.1", "198.51.100.7"},
+		{"malformed remote addr falls back unchanged", "not-an-addr", "", "", "not-an-addr"},
+		{"cf-connecting-ip wins over x-forwarded-for", "127.0.0.1:4321", "198.51.100.9", "203.0.113.200", "198.51.100.9"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, "/", nil)
 			req.RemoteAddr = tt.remoteAddr
+			if tt.cfConnecting != "" {
+				req.Header.Set("CF-Connecting-IP", tt.cfConnecting)
+			}
 			if tt.forwarded != "" {
 				req.Header.Set("X-Forwarded-For", tt.forwarded)
 			}

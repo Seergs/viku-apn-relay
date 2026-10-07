@@ -88,8 +88,18 @@ func (l *Limiter) Middleware(next http.Handler) http.Handler {
 
 // ClientIP returns the originating client address. The relay sits behind a
 // reverse proxy, so every connection otherwise looks like it comes from the
-// proxy: it trusts the proxy's X-Forwarded-For over the TCP peer address.
+// proxy: it trusts CF-Connecting-IP (set by Cloudflare, overwriting any value
+// a client sends) over X-Forwarded-For (set by Caddy, but only appended to,
+// so a client reaching Caddy directly could prepend a fake one) over the TCP
+// peer address.
+//
+// This is only safe to trust as long as the origin firewall accepts
+// connections on 80/443 from Cloudflare's ranges alone; otherwise a request
+// straight to the VPS skips Cloudflare and forges both headers.
 func ClientIP(r *http.Request) string {
+	if ip := strings.TrimSpace(r.Header.Get("CF-Connecting-IP")); ip != "" {
+		return ip
+	}
 	if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
 		first, _, _ := strings.Cut(fwd, ",")
 		if ip := strings.TrimSpace(first); ip != "" {

@@ -66,6 +66,7 @@ The end state is the same.
 | `400` | Invalid JSON or invalid field values. |
 | `401` | Missing or wrong management token, or unknown id. Both cases look the same. |
 | `413` | Request body over 4 KiB. |
+| `429` | Too many registration requests from this client IP. `POST /v1/registrations` allows 5 per minute, burst 5. Trusts the reverse proxy's `X-Forwarded-For`. |
 | `500` | Internal error. No detail is returned. |
 
 ### `POST /h/{id}`

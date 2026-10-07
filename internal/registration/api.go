@@ -6,25 +6,44 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
+
+	"github.com/Seergs/viku-apn-relay/internal/ratelimit"
+	"golang.org/x/time/rate"
 )
 
 const maxRequestBytes = 4 << 10
 
+// Registration is the only unauthenticated, write endpoint, so it is the one
+// a client could hammer. 5 requests per minute per IP, with a burst of 5 to
+// tolerate retries, is enough for a device that registers on launch.
+const (
+	registerRateLimit = rate.Limit(5.0 / 60.0)
+	registerRateBurst = 5
+	registerRateTTL   = 10 * time.Minute
+)
+
 // API serves the device registration endpoints the iOS app calls.
 type API struct {
-	store   *Store
-	baseURL string
+	store       *Store
+	baseURL     string
+	registerLim *ratelimit.Limiter
 }
 
 // NewAPI returns the registration handlers. baseURL is the public origin of
 // the relay, used to build the webhook URL returned to the app.
 func NewAPI(store *Store, baseURL string) *API {
-	return &API{store: store, baseURL: strings.TrimSuffix(baseURL, "/")}
+	return &API{
+		store:       store,
+		baseURL:     strings.TrimSuffix(baseURL, "/"),
+		registerLim: ratelimit.New(registerRateLimit, registerRateBurst, registerRateTTL),
+	}
 }
 
-// Routes registers the endpoints on mux.
+// Routes registers the endpoints on mux. Registration is rate limited per
+// client IP; it is the only endpoint with no credential to authenticate it.
 func (a *API) Routes(mux *http.ServeMux) {
-	mux.HandleFunc("POST /v1/registrations", a.register)
+	mux.Handle("POST /v1/registrations", a.registerLim.Middleware(http.HandlerFunc(a.register)))
 	mux.HandleFunc("DELETE /v1/registrations/{id}", a.unregister)
 }
 

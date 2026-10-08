@@ -25,6 +25,7 @@ func newInput() NewRegistration {
 		APNsToken:     "apns-token-1",
 		WebhookSecret: testSecret,
 		VikunjaUserID: 42,
+		AccountKey:    "account-key-1",
 	}
 }
 
@@ -72,7 +73,7 @@ func TestRegisterStoresOnlyTokenHash(t *testing.T) {
 	}
 }
 
-func TestRegisterIsIdempotentPerAPNsToken(t *testing.T) {
+func TestRegisterIsIdempotentPerAccountKey(t *testing.T) {
 	s := openTestStore(t)
 
 	first, err := s.Register(newInput())
@@ -97,6 +98,81 @@ func TestRegisterIsIdempotentPerAPNsToken(t *testing.T) {
 	}
 	if err := s.Delete(second.ID, second.ManagementToken); err != nil {
 		t.Fatalf("new management token rejected: %v", err)
+	}
+}
+
+// TestRegisterKeepsAccountsSeparateOnSameDevice is the scenario VIKU-192
+// exists to fix: two accounts on the same physical device (same apns_token)
+// must never collapse into one row.
+func TestRegisterKeepsAccountsSeparateOnSameDevice(t *testing.T) {
+	s := openTestStore(t)
+
+	accountA := newInput()
+	accountA.AccountKey = "account-a"
+	accountA.VikunjaUserID = 5
+
+	accountB := newInput()
+	accountB.AccountKey = "account-b"
+	accountB.VikunjaUserID = 5 // same numeric user id on a different instance
+
+	regA, err := s.Register(accountA)
+	if err != nil {
+		t.Fatalf("register account A: %v", err)
+	}
+	regB, err := s.Register(accountB)
+	if err != nil {
+		t.Fatalf("register account B: %v", err)
+	}
+
+	if regA.ID == regB.ID {
+		t.Fatalf("accounts A and B share the same registration id %q", regA.ID)
+	}
+	if rowCount(t, s) != 2 {
+		t.Fatalf("rows = %d, want 2", rowCount(t, s))
+	}
+
+	targetA, ok := s.Lookup(regA.ID)
+	if !ok || !bytes.Equal(targetA.Secret, testSecret) {
+		t.Fatalf("account A's secret was not preserved by registering account B")
+	}
+	if err := s.Delete(regA.ID, regA.ManagementToken); err != nil {
+		t.Fatalf("account A's management token rejected: %v", err)
+	}
+	if _, ok := s.Lookup(regB.ID); !ok {
+		t.Fatal("deleting account A must not remove account B's registration")
+	}
+}
+
+// TestRegisterUpdatesAPNsTokenOnRotation covers a device token refresh for
+// an account that's already registered: same account_key, new apns_token,
+// same row.
+func TestRegisterUpdatesAPNsTokenOnRotation(t *testing.T) {
+	s := openTestStore(t)
+
+	first, err := s.Register(newInput())
+	if err != nil {
+		t.Fatalf("first Register: %v", err)
+	}
+	rotated := newInput()
+	rotated.APNsToken = "apns-token-2"
+	second, err := s.Register(rotated)
+	if err != nil {
+		t.Fatalf("second Register: %v", err)
+	}
+
+	if second.ID != first.ID {
+		t.Fatalf("token rotation changed id: %q -> %q", first.ID, second.ID)
+	}
+	if rowCount(t, s) != 1 {
+		t.Fatalf("rows = %d, want 1", rowCount(t, s))
+	}
+
+	var apnsToken string
+	if err := s.db.QueryRow(`SELECT apns_token FROM registrations WHERE id = ?`, second.ID).Scan(&apnsToken); err != nil {
+		t.Fatalf("read apns_token: %v", err)
+	}
+	if apnsToken != "apns-token-2" {
+		t.Fatalf("apns_token = %q, want apns-token-2", apnsToken)
 	}
 }
 
@@ -144,6 +220,7 @@ func TestRegisterRejectsInvalidInput(t *testing.T) {
 		{"empty apns token", func(n *NewRegistration) { n.APNsToken = "" }},
 		{"short secret", func(n *NewRegistration) { n.WebhookSecret = []byte("short") }},
 		{"zero user id", func(n *NewRegistration) { n.VikunjaUserID = 0 }},
+		{"empty account key", func(n *NewRegistration) { n.AccountKey = "" }},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -30,7 +30,8 @@ func do(mux http.Handler, method, path, body, token string) *httptest.ResponseRe
 const registerBody = `{
 	"apns_token": "apns-token-1",
 	"webhook_secret": "ssssssssssssssssssssssssssssssss",
-	"vikunja_user_id": 42
+	"vikunja_user_id": 42,
+	"account_key": "account-key-1"
 }`
 
 type registerResp struct {
@@ -87,8 +88,9 @@ func TestRegisterRejectsBadInput(t *testing.T) {
 		body string
 	}{
 		{"invalid json", `{`},
-		{"short secret", `{"apns_token":"t","webhook_secret":"short","vikunja_user_id":1}`},
-		{"zero user id", `{"apns_token":"t","webhook_secret":"ssssssssssssssssssssssssssssssss","vikunja_user_id":0}`},
+		{"short secret", `{"apns_token":"t","webhook_secret":"short","vikunja_user_id":1,"account_key":"k"}`},
+		{"zero user id", `{"apns_token":"t","webhook_secret":"ssssssssssssssssssssssssssssssss","vikunja_user_id":0,"account_key":"k"}`},
+		{"empty account key", `{"apns_token":"t","webhook_secret":"ssssssssssssssssssssssssssssssss","vikunja_user_id":1,"account_key":""}`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -169,8 +171,8 @@ func TestRegisterStoresWebhookSecret(t *testing.T) {
 func TestRegisterIsRateLimitedPerIP(t *testing.T) {
 	mux, store := newTestAPI(t)
 
-	registerFrom := func(remoteAddr, apnsToken string) int {
-		body := `{"apns_token":"` + apnsToken + `","webhook_secret":"ssssssssssssssssssssssssssssssss","vikunja_user_id":1}`
+	registerFrom := func(remoteAddr, accountKey string) int {
+		body := `{"apns_token":"shared-device-token","webhook_secret":"ssssssssssssssssssssssssssssssss","vikunja_user_id":1,"account_key":"` + accountKey + `"}`
 		req := httptest.NewRequest(http.MethodPost, "/v1/registrations", strings.NewReader(body))
 		req.RemoteAddr = remoteAddr
 		rec := httptest.NewRecorder()
@@ -179,7 +181,7 @@ func TestRegisterIsRateLimitedPerIP(t *testing.T) {
 	}
 
 	for i := 0; i < registerRateBurst; i++ {
-		if code := registerFrom("203.0.113.9:1234", "burst-token-"+string(rune('a'+i))); code != http.StatusOK {
+		if code := registerFrom("203.0.113.9:1234", "burst-key-"+string(rune('a'+i))); code != http.StatusOK {
 			t.Fatalf("request %d within the burst = %d, want 200", i, code)
 		}
 	}

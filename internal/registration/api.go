@@ -51,6 +51,7 @@ type registerRequest struct {
 	APNsToken     string `json:"apns_token"`
 	WebhookSecret string `json:"webhook_secret"`
 	VikunjaUserID int64  `json:"vikunja_user_id"`
+	AccountKey    string `json:"account_key"`
 }
 
 type registerResponse struct {
@@ -59,8 +60,9 @@ type registerResponse struct {
 	ManagementToken string `json:"management_token"`
 }
 
-// register creates or replaces the registration for an APNs token. Repeating
-// the call with the same token leaves one registration behind.
+// register creates or replaces the registration for an account_key.
+// Repeating the call with the same account_key leaves one registration
+// behind, even if the apns_token changed (device token rotation).
 func (a *API) register(w http.ResponseWriter, r *http.Request) {
 	var req registerRequest
 	if !decode(w, r, &req) {
@@ -71,6 +73,7 @@ func (a *API) register(w http.ResponseWriter, r *http.Request) {
 		APNsToken:     req.APNsToken,
 		WebhookSecret: []byte(req.WebhookSecret),
 		VikunjaUserID: req.VikunjaUserID,
+		AccountKey:    req.AccountKey,
 	})
 	if err != nil {
 		writeInternalOrInvalid(w, err)

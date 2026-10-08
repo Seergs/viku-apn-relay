@@ -30,7 +30,8 @@ Request:
 {
   "apns_token": "<APNs device token>",
   "webhook_secret": "<HMAC secret generated on the device, 32 to 256 bytes>",
-  "vikunja_user_id": 42
+  "vikunja_user_id": 42,
+  "account_key": "<opaque id for the app's saved connection, 1 to 128 characters>"
 }
 ```
 
@@ -44,10 +45,17 @@ Response `200`:
 }
 ```
 
-Idempotent per `apns_token`. Registering the same token again keeps the same `id` and
-`webhook_url`, replaces the stored secret and user id, and issues a new `management_token`.
-The previous management token stops working. The app must then recreate its Vikunja
-webhooks with the new secret.
+Idempotent per `account_key`, not per `apns_token`: one device can register several
+accounts (several `account_key`s), each getting its own row, `id`, and `webhook_url`, so
+enabling notifications on two accounts on the same device never collides. Registering the
+same `account_key` again (including with a new `apns_token`, e.g. after a device token
+rotation) keeps the same `id` and `webhook_url`, replaces the stored `apns_token`/secret/user
+id, and issues a new `management_token`. The previous management token stops working. The
+app must then recreate its Vikunja webhooks with the new secret.
+
+The relay never interprets `account_key`, it only stores it and matches registrations back
+by it. The app is free to use its own saved-connection id, as long as it is stable across
+calls for the same connection and distinct across different connections.
 
 `vikunja_user_id` is used only to drop self-caused project events. The relay does not verify
 it against Vikunja.
@@ -91,7 +99,8 @@ Table `registrations`:
 | Column | Type | Notes |
 |---|---|---|
 | `id` | `TEXT` primary key | Random 16 bytes, hex encoded. Appears in the webhook URL. |
-| `apns_token` | `TEXT` unique | APNs device token. One row per token. |
+| `apns_token` | `TEXT` | APNs device token. Not unique: several accounts on the same device share one. |
+| `account_key` | `TEXT` unique | Opaque id for the app's saved connection. One row per account_key. |
 | `webhook_secret` | `BLOB` | HMAC key used to verify deliveries. Needed in plain text, so it cannot be hashed. |
 | `vikunja_user_id` | `INTEGER` | Used to drop self-caused project events. |
 | `management_token_hash` | `TEXT` | SHA-256 hex of the management token. The token itself is never stored. |

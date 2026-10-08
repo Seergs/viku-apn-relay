@@ -18,7 +18,8 @@ import (
 const schema = `
 CREATE TABLE IF NOT EXISTS registrations (
 	id                    TEXT    PRIMARY KEY,
-	apns_token            TEXT    NOT NULL UNIQUE,
+	apns_token            TEXT    NOT NULL,
+	account_key           TEXT    NOT NULL UNIQUE,
 	webhook_secret        BLOB    NOT NULL,
 	vikunja_user_id       INTEGER NOT NULL,
 	management_token_hash TEXT    NOT NULL,
@@ -65,10 +66,11 @@ func (s *Store) Close() error {
 	return s.db.Close()
 }
 
-// Register creates a registration for the APNs token, or replaces the
-// existing one for that token. Replacing keeps the opaque id so the webhook
-// URL stays the same, and issues a new management token that invalidates the
-// previous one.
+// Register creates a registration for the account, or replaces the existing
+// one for that account. One account_key maps to at most one row, regardless
+// of how many other accounts share the same apns_token (same physical
+// device). Replacing keeps the opaque id so the webhook URL stays the same,
+// and issues a new management token that invalidates the previous one.
 func (s *Store) Register(in NewRegistration) (Registration, error) {
 	if err := in.validate(); err != nil {
 		return Registration{}, err
@@ -87,7 +89,7 @@ func (s *Store) Register(in NewRegistration) (Registration, error) {
 	defer tx.Rollback()
 
 	var id string
-	err = tx.QueryRow(`SELECT id FROM registrations WHERE apns_token = ?`, in.APNsToken).Scan(&id)
+	err = tx.QueryRow(`SELECT id FROM registrations WHERE account_key = ?`, in.AccountKey).Scan(&id)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		id, err = newID()
@@ -95,16 +97,16 @@ func (s *Store) Register(in NewRegistration) (Registration, error) {
 			return Registration{}, err
 		}
 		_, err = tx.Exec(`INSERT INTO registrations
-			(id, apns_token, webhook_secret, vikunja_user_id, management_token_hash, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?)`,
-			id, in.APNsToken, in.WebhookSecret, in.VikunjaUserID, hashToken(mgmt), now, now)
+			(id, apns_token, account_key, webhook_secret, vikunja_user_id, management_token_hash, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			id, in.APNsToken, in.AccountKey, in.WebhookSecret, in.VikunjaUserID, hashToken(mgmt), now, now)
 	case err != nil:
-		return Registration{}, fmt.Errorf("lookup by apns token: %w", err)
+		return Registration{}, fmt.Errorf("lookup by account key: %w", err)
 	default:
 		_, err = tx.Exec(`UPDATE registrations SET
-			webhook_secret = ?, vikunja_user_id = ?, management_token_hash = ?, updated_at = ?
+			apns_token = ?, webhook_secret = ?, vikunja_user_id = ?, management_token_hash = ?, updated_at = ?
 			WHERE id = ?`,
-			in.WebhookSecret, in.VikunjaUserID, hashToken(mgmt), now, id)
+			in.APNsToken, in.WebhookSecret, in.VikunjaUserID, hashToken(mgmt), now, id)
 	}
 	if err != nil {
 		return Registration{}, fmt.Errorf("write registration: %w", err)

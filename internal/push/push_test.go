@@ -84,7 +84,7 @@ func TestDispatchSendsPushForAnotherUsersEvent(t *testing.T) {
 	if err := json.Unmarshal(s.payloads[0], &got); err != nil {
 		t.Fatalf("payload is not JSON: %v", err)
 	}
-	if got.APS.Alert.Title != "Inbox" || got.APS.Alert.Body != "Example task" || got.Event != notify.TaskCreated {
+	if got.APS.Alert.Title != "Inbox" || got.APS.Alert.Body != `Jane Doe created "Example task"` || got.Event != notify.TaskCreated {
 		t.Fatalf("payload = %+v", got)
 	}
 	if len(r.ids) != 0 {
@@ -178,7 +178,34 @@ func TestPayloadFallsBackToVikunjaTitle(t *testing.T) {
 	if !strings.Contains(string(p), `"title":"Vikunja"`) {
 		t.Fatalf("payload = %s, want the fallback title", p)
 	}
-	if strings.Contains(string(p), `"body"`) {
-		t.Fatalf("payload = %s, body should be omitted when there is no task", p)
+	if !strings.Contains(string(p), `"body":"Someone updated the project"`) {
+		t.Fatalf("payload = %s, want a body with the actor fallback", p)
+	}
+}
+
+func TestBodyFallsBackWhenActorOrAssigneeIsMissing(t *testing.T) {
+	cases := []struct {
+		name string
+		n    notify.Notification
+		want string
+	}{
+		{"actor missing", notify.Notification{Event: notify.TaskCreated, TaskTitle: "Example task"}, `Someone created "Example task"`},
+		{"assignee missing", notify.Notification{Event: notify.TaskAssigneeCreated, TaskTitle: "Example task", ActorName: "Jane Doe"}, `Jane Doe assigned "Example task" to someone`},
+		{"team missing", notify.Notification{Event: notify.ProjectSharedTeam, ActorName: "Jane Doe"}, `Jane Doe shared the project with a team`},
+		{"comment missing", notify.Notification{Event: notify.TaskCommentCreated, TaskTitle: "Example task", ActorName: "Jane Doe"}, `Jane Doe commented on "Example task"`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := Body(c.n); got != c.want {
+				t.Fatalf("Body = %q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
+func TestBodyUnknownEventFallsBackToTaskTitle(t *testing.T) {
+	got := Body(notify.Notification{Event: "something.new", TaskTitle: "Example task"})
+	if got != "Example task" {
+		t.Fatalf("Body = %q, want the raw task title as a last resort", got)
 	}
 }

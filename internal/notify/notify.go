@@ -5,6 +5,9 @@ package notify
 import (
 	"encoding/json"
 	"fmt"
+	"html"
+	"regexp"
+	"strings"
 )
 
 // Event names the relay pushes. They match the events Vikunja offers on a
@@ -61,11 +64,18 @@ var supported = map[string]bool{
 	TasksOverdue:          true,
 }
 
-// Notification is the minimal content sent to APNs.
+// Notification is the normalized content the push package renders into an
+// APNs alert. Fields are empty, never absent, when the event has no such
+// data (e.g. ActorName for a system-fired reminder, AssigneeName outside an
+// assignee event) — push.Body is responsible for the per-field fallback.
 type Notification struct {
-	Event       string
-	TaskTitle   string
-	ProjectName string
+	Event          string
+	TaskTitle      string
+	ProjectName    string
+	ActorName      string
+	AssigneeName   string
+	TeamName       string
+	CommentExcerpt string
 }
 
 // delivery holds only the fields the relay reads. Everything else in the body
@@ -74,7 +84,8 @@ type delivery struct {
 	EventName string `json:"event_name"`
 	Data      struct {
 		Doer *struct {
-			ID int64 `json:"id"`
+			ID   int64  `json:"id"`
+			Name string `json:"name"`
 		} `json:"doer"`
 		Task *struct {
 			Title string `json:"title"`
@@ -82,7 +93,38 @@ type delivery struct {
 		Project *struct {
 			Title string `json:"title"`
 		} `json:"project"`
+		Assignee *struct {
+			Name string `json:"name"`
+		} `json:"assignee"`
+		Team *struct {
+			Name string `json:"name"`
+		} `json:"team"`
+		Comment *struct {
+			Comment string `json:"comment"`
+		} `json:"comment"`
 	} `json:"data"`
+}
+
+// commentExcerptLimit is the max rune length of CommentExcerpt. Vikunja
+// comments are HTML and can be long; the push body only needs enough to
+// recognize the comment, not the whole thing.
+const commentExcerptLimit = 120
+
+var htmlTag = regexp.MustCompile(`<[^>]*>`)
+
+// plainTextExcerpt strips HTML tags and entities from a Vikunja comment body
+// and truncates it to commentExcerptLimit runes on a rune boundary (the
+// source is user text, so byte-slicing could cut a multi-byte character in
+// half).
+func plainTextExcerpt(htmlBody string) string {
+	text := html.UnescapeString(htmlTag.ReplaceAllString(htmlBody, " "))
+	text = strings.Join(strings.Fields(text), " ")
+
+	runes := []rune(text)
+	if len(runes) <= commentExcerptLimit {
+		return text
+	}
+	return string(runes[:commentExcerptLimit]) + "…"
 }
 
 // Map parses a verified delivery body and returns the notification to push to
@@ -107,6 +149,18 @@ func Map(body []byte, userID int64) (n Notification, ok bool, err error) {
 	}
 	if d.Data.Project != nil {
 		n.ProjectName = d.Data.Project.Title
+	}
+	if d.Data.Doer != nil {
+		n.ActorName = d.Data.Doer.Name
+	}
+	if d.Data.Assignee != nil {
+		n.AssigneeName = d.Data.Assignee.Name
+	}
+	if d.Data.Team != nil {
+		n.TeamName = d.Data.Team.Name
+	}
+	if d.Data.Comment != nil {
+		n.CommentExcerpt = plainTextExcerpt(d.Data.Comment.Comment)
 	}
 	return n, true, nil
 }

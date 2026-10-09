@@ -30,7 +30,7 @@ func TestMapTaskCreated(t *testing.T) {
 	if !ok {
 		t.Fatal("event by another user was dropped")
 	}
-	want := Notification{Event: TaskCreated, TaskTitle: "Example task", ProjectName: "Inbox"}
+	want := Notification{Event: TaskCreated, TaskTitle: "Example task", ProjectName: "Inbox", ActorName: "Jane Doe"}
 	if n != want {
 		t.Fatalf("Map = %+v, want %+v", n, want)
 	}
@@ -66,7 +66,7 @@ func TestMapTaskAssigneeCreated(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("Map for another user = ok %v, err %v; want pushed", ok, err)
 	}
-	want := Notification{Event: TaskAssigneeCreated, TaskTitle: "Example task", ProjectName: "Inbox"}
+	want := Notification{Event: TaskAssigneeCreated, TaskTitle: "Example task", ProjectName: "Inbox", ActorName: "Jane Doe", AssigneeName: "Jane Doe"}
 	if n != want {
 		t.Fatalf("Map = %+v, want %+v", n, want)
 	}
@@ -86,7 +86,7 @@ func TestMapProjectSharedTeam(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("Map for another user = ok %v, err %v; want pushed", ok, err)
 	}
-	want := Notification{Event: ProjectSharedTeam, ProjectName: "Inbox"}
+	want := Notification{Event: ProjectSharedTeam, ProjectName: "Inbox", ActorName: "Jane Doe", TeamName: "test"}
 	if n != want {
 		t.Fatalf("Map = %+v, want %+v", n, want)
 	}
@@ -106,7 +106,7 @@ func TestMapProjectUpdated(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("Map for another user = ok %v, err %v; want pushed", ok, err)
 	}
-	want := Notification{Event: ProjectUpdated, ProjectName: "Inbox test"}
+	want := Notification{Event: ProjectUpdated, ProjectName: "Inbox test", ActorName: "Jane Doe"}
 	if n != want {
 		t.Fatalf("Map = %+v, want %+v", n, want)
 	}
@@ -126,7 +126,7 @@ func TestMapTaskUpdated(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("Map for another user = ok %v, err %v; want pushed", ok, err)
 	}
-	want := Notification{Event: TaskUpdated, TaskTitle: "Example task", ProjectName: "Inbox"}
+	want := Notification{Event: TaskUpdated, TaskTitle: "Example task", ProjectName: "Inbox", ActorName: "Jane Doe"}
 	if n != want {
 		t.Fatalf("Map = %+v, want %+v", n, want)
 	}
@@ -146,7 +146,7 @@ func TestMapTaskCommentCreated(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("Map for another user = ok %v, err %v; want pushed", ok, err)
 	}
-	want := Notification{Event: TaskCommentCreated, TaskTitle: "Example task", ProjectName: "Inbox"}
+	want := Notification{Event: TaskCommentCreated, TaskTitle: "Example task", ProjectName: "Inbox", ActorName: "Jane Doe", CommentExcerpt: "test"}
 	if n != want {
 		t.Fatalf("Map = %+v, want %+v", n, want)
 	}
@@ -166,7 +166,7 @@ func TestMapTaskCommentDeleted(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("Map for another user = ok %v, err %v; want pushed", ok, err)
 	}
-	want := Notification{Event: TaskCommentDeleted, TaskTitle: "Example task", ProjectName: "Inbox"}
+	want := Notification{Event: TaskCommentDeleted, TaskTitle: "Example task", ProjectName: "Inbox", ActorName: "Jane Doe", CommentExcerpt: "test"}
 	if n != want {
 		t.Fatalf("Map = %+v, want %+v", n, want)
 	}
@@ -186,7 +186,7 @@ func TestMapTaskCommentEdited(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("Map for another user = ok %v, err %v; want pushed", ok, err)
 	}
-	want := Notification{Event: TaskCommentEdited, TaskTitle: "Example task", ProjectName: "Inbox"}
+	want := Notification{Event: TaskCommentEdited, TaskTitle: "Example task", ProjectName: "Inbox", ActorName: "Jane Doe", CommentExcerpt: "test test"}
 	if n != want {
 		t.Fatalf("Map = %+v, want %+v", n, want)
 	}
@@ -206,7 +206,7 @@ func TestMapTaskDeleted(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("Map for another user = ok %v, err %v; want pushed", ok, err)
 	}
-	want := Notification{Event: TaskDeleted, TaskTitle: "Example task", ProjectName: "Inbox"}
+	want := Notification{Event: TaskDeleted, TaskTitle: "Example task", ProjectName: "Inbox", ActorName: "Jane Doe"}
 	if n != want {
 		t.Fatalf("Map = %+v, want %+v", n, want)
 	}
@@ -226,7 +226,7 @@ func TestMapTaskRelationCreated(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("Map for another user = ok %v, err %v; want pushed", ok, err)
 	}
-	want := Notification{Event: TaskRelationCreated, TaskTitle: "Example task", ProjectName: "Inbox"}
+	want := Notification{Event: TaskRelationCreated, TaskTitle: "Example task", ProjectName: "Inbox", ActorName: "Jane Doe"}
 	if n != want {
 		t.Fatalf("Map = %+v, want %+v", n, want)
 	}
@@ -246,7 +246,7 @@ func TestMapTaskRelationDeleted(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("Map for another user = ok %v, err %v; want pushed", ok, err)
 	}
-	want := Notification{Event: TaskRelationDeleted, TaskTitle: "Example task", ProjectName: "Inbox"}
+	want := Notification{Event: TaskRelationDeleted, TaskTitle: "Example task", ProjectName: "Inbox", ActorName: "Jane Doe"}
 	if n != want {
 		t.Fatalf("Map = %+v, want %+v", n, want)
 	}
@@ -266,7 +266,7 @@ func TestMapTaskAssigneeDeleted(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("Map for another user = ok %v, err %v; want pushed", ok, err)
 	}
-	want := Notification{Event: TaskAssigneeDeleted, TaskTitle: "Example task", ProjectName: "Inbox"}
+	want := Notification{Event: TaskAssigneeDeleted, TaskTitle: "Example task", ProjectName: "Inbox", ActorName: "Jane Doe", AssigneeName: "Jane Doe"}
 	if n != want {
 		t.Fatalf("Map = %+v, want %+v", n, want)
 	}
@@ -305,7 +305,7 @@ func TestMapProjectDeleted(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("Map for another user = ok %v, err %v; want pushed", ok, err)
 	}
-	want := Notification{Event: ProjectDeleted, ProjectName: "Example project"}
+	want := Notification{Event: ProjectDeleted, ProjectName: "Example project", ActorName: "Jane Doe"}
 	if n != want {
 		t.Fatalf("Map = %+v, want %+v", n, want)
 	}
@@ -325,7 +325,7 @@ func TestMapTaskAttachmentDeleted(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("Map for another user = ok %v, err %v; want pushed", ok, err)
 	}
-	want := Notification{Event: TaskAttachmentDeleted, TaskTitle: "Example task", ProjectName: "Inbox"}
+	want := Notification{Event: TaskAttachmentDeleted, TaskTitle: "Example task", ProjectName: "Inbox", ActorName: "Jane Doe"}
 	if n != want {
 		t.Fatalf("Map = %+v, want %+v", n, want)
 	}
@@ -345,7 +345,7 @@ func TestMapProjectSharedUser(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("Map for another user = ok %v, err %v; want pushed", ok, err)
 	}
-	want := Notification{Event: ProjectSharedUser, ProjectName: "Inbox"}
+	want := Notification{Event: ProjectSharedUser, ProjectName: "Inbox", ActorName: "Jane Doe"}
 	if n != want {
 		t.Fatalf("Map = %+v, want %+v", n, want)
 	}

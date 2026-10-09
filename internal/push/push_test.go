@@ -20,14 +20,16 @@ import (
 const taskCreatedFixture = "../webhook/testdata/task_created.json"
 
 type fakeSender struct {
-	err      error
-	tokens   []string
-	payloads [][]byte
+	err         error
+	tokens      []string
+	payloads    [][]byte
+	collapseIDs []string
 }
 
-func (f *fakeSender) Send(_ context.Context, token string, payload []byte) error {
+func (f *fakeSender) Send(_ context.Context, token string, payload []byte, collapseID string) error {
 	f.tokens = append(f.tokens, token)
 	f.payloads = append(f.payloads, payload)
+	f.collapseIDs = append(f.collapseIDs, collapseID)
 	return f.err
 }
 
@@ -78,6 +80,7 @@ func TestDispatchSendsPushForAnotherUsersEvent(t *testing.T) {
 				Title string `json:"title"`
 				Body  string `json:"body"`
 			} `json:"alert"`
+			ThreadID string `json:"thread-id"`
 		} `json:"aps"`
 		Event string `json:"event"`
 	}
@@ -87,8 +90,38 @@ func TestDispatchSendsPushForAnotherUsersEvent(t *testing.T) {
 	if got.APS.Alert.Title != "Inbox" || got.APS.Alert.Body != `Jane Doe created "Example task"` || got.Event != notify.TaskCreated {
 		t.Fatalf("payload = %+v", got)
 	}
+	// target(2) registers under id "reg-1"; the fixture's project is id 1 and
+	// its task is id 255.
+	if got.APS.ThreadID != "reg-1-project-1" {
+		t.Fatalf("thread-id = %q, want it namespaced by the registration id", got.APS.ThreadID)
+	}
+	if len(s.collapseIDs) != 1 || s.collapseIDs[0] != "reg-1-task-255" {
+		t.Fatalf("collapse-id = %v, want it namespaced by the registration id", s.collapseIDs)
+	}
 	if len(r.ids) != 0 {
 		t.Fatal("registration removed after a successful send")
+	}
+}
+
+func TestDispatchScopesGroupingPerRegistrationNotPerVikunjaID(t *testing.T) {
+	// Two different accounts on the same physical device (same APNs token)
+	// can each have a project/task with the same Vikunja id. The registration
+	// id must keep their thread-id/collapse-id from colliding.
+	var logsA, logsB bytes.Buffer
+	sA, sB := &fakeSender{}, &fakeSender{}
+
+	targetA := webhook.Target{ID: "account-a", VikunjaUserID: 2, APNsToken: testToken}
+	targetB := webhook.Target{ID: "account-b", VikunjaUserID: 2, APNsToken: testToken}
+
+	if err := NewDispatcher(sA, &fakeRemover{}, newLogger(&logsA)).Dispatch(targetA, loadFixture(t)); err != nil {
+		t.Fatalf("Dispatch A: %v", err)
+	}
+	if err := NewDispatcher(sB, &fakeRemover{}, newLogger(&logsB)).Dispatch(targetB, loadFixture(t)); err != nil {
+		t.Fatalf("Dispatch B: %v", err)
+	}
+
+	if sA.collapseIDs[0] == sB.collapseIDs[0] {
+		t.Fatalf("collapse-id collided across accounts: %q", sA.collapseIDs[0])
 	}
 }
 
@@ -171,7 +204,7 @@ func TestDispatchRejectsMalformedBody(t *testing.T) {
 }
 
 func TestPayloadFallsBackToVikunjaTitle(t *testing.T) {
-	p, err := Payload(notify.Notification{Event: notify.ProjectUpdated})
+	p, _, err := Payload(notify.Notification{Event: notify.ProjectUpdated}, "reg-1")
 	if err != nil {
 		t.Fatalf("Payload: %v", err)
 	}
@@ -180,6 +213,56 @@ func TestPayloadFallsBackToVikunjaTitle(t *testing.T) {
 	}
 	if !strings.Contains(string(p), `"body":"Someone updated the project"`) {
 		t.Fatalf("payload = %s, want a body with the actor fallback", p)
+	}
+}
+
+func TestPayloadGroupingIDs(t *testing.T) {
+	cases := []struct {
+		name           string
+		n              notify.Notification
+		wantThreadID   string
+		wantCollapseID string
+	}{
+		{
+			name:           "task event collapses on the task",
+			n:              notify.Notification{Event: notify.TaskUpdated, ProjectID: 1, TaskID: 255},
+			wantThreadID:   "reg-1-project-1",
+			wantCollapseID: "reg-1-task-255",
+		},
+		{
+			name:           "task-less project event falls back to the project",
+			n:              notify.Notification{Event: notify.ProjectUpdated, ProjectID: 1},
+			wantThreadID:   "reg-1-project-1",
+			wantCollapseID: "reg-1-project-1",
+		},
+		{
+			name:           "no project or task means no grouping at all",
+			n:              notify.Notification{Event: notify.TasksOverdue},
+			wantThreadID:   "",
+			wantCollapseID: "",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			p, collapseID, err := Payload(c.n, "reg-1")
+			if err != nil {
+				t.Fatalf("Payload: %v", err)
+			}
+			var got struct {
+				APS struct {
+					ThreadID string `json:"thread-id"`
+				} `json:"aps"`
+			}
+			if err := json.Unmarshal(p, &got); err != nil {
+				t.Fatalf("payload is not JSON: %v", err)
+			}
+			if got.APS.ThreadID != c.wantThreadID {
+				t.Fatalf("thread-id = %q, want %q", got.APS.ThreadID, c.wantThreadID)
+			}
+			if collapseID != c.wantCollapseID {
+				t.Fatalf("collapse-id = %q, want %q", collapseID, c.wantCollapseID)
+			}
+		})
 	}
 }
 

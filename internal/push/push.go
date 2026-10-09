@@ -17,9 +17,11 @@ import (
 
 const sendTimeout = 10 * time.Second
 
-// Sender delivers one payload to one APNs device token.
+// Sender delivers one payload to one APNs device token. collapseID, when
+// non-empty, is sent as the apns-collapse-id header so APNs can replace a
+// still-queued delivery for the same task/project instead of stacking it.
 type Sender interface {
-	Send(ctx context.Context, deviceToken string, payload []byte) error
+	Send(ctx context.Context, deviceToken string, payload []byte, collapseID string) error
 }
 
 // Remover deletes a registration by its opaque id.
@@ -54,7 +56,7 @@ func (d *Dispatcher) Dispatch(t webhook.Target, body []byte) error {
 		return nil
 	}
 
-	payload, err := Payload(n)
+	payload, collapseID, err := Payload(n, t.ID)
 	if err != nil {
 		return err
 	}
@@ -62,7 +64,7 @@ func (d *Dispatcher) Dispatch(t webhook.Target, body []byte) error {
 	ctx, cancel := context.WithTimeout(context.Background(), sendTimeout)
 	defer cancel()
 
-	err = d.sender.Send(ctx, t.APNsToken, payload)
+	err = d.sender.Send(ctx, t.APNsToken, payload, collapseID)
 	switch {
 	case err == nil:
 		d.log.Info("push sent", "status", 200)
@@ -85,31 +87,57 @@ func (d *Dispatcher) Dispatch(t webhook.Target, body []byte) error {
 	return err
 }
 
-// alert is the APNs aps.alert object. The title stays the project name (so a
-// later thread-id grouping by project reads naturally); the body is a
-// per-event sentence built by Body.
+// alert is the APNs aps.alert object. The title stays the project name; the
+// body is a per-event sentence built by Body.
 type alert struct {
 	Title string `json:"title"`
 	Body  string `json:"body,omitempty"`
 }
 
-// Payload builds the APNs JSON body for n.
-func Payload(n notify.Notification) ([]byte, error) {
+// Payload builds the APNs JSON body for n, plus the apns-collapse-id header
+// value Dispatch should send alongside it (empty when there's nothing to
+// collapse against, e.g. the tasks.overdue digest).
+//
+// Both thread-id (grouping, inside the JSON) and collapse-id (de-duplication,
+// an HTTP header set by the caller) are scoped by APNs to this device's APNs
+// token and the app's topic only — never to a Vikunja account. One device can
+// hold several registrations, one per connected Vikunja instance, all sharing
+// that same token, and two different self-hosted instances can easily assign
+// the same project or task id. Building these values from n's ids alone would
+// group, or even collapse, notifications from unrelated accounts, so both are
+// namespaced with registrationID — webhook.Target.ID, already unique per
+// account per device (it's the same opaque id the webhook URL is built from).
+func Payload(n notify.Notification, registrationID string) (payload []byte, collapseID string, err error) {
 	title := n.ProjectName
 	if title == "" {
 		title = "Vikunja"
 	}
-	return json.Marshal(struct {
+
+	var threadID string
+	if n.ProjectID != 0 {
+		threadID = fmt.Sprintf("%s-project-%d", registrationID, n.ProjectID)
+	}
+	switch {
+	case n.TaskID != 0:
+		collapseID = fmt.Sprintf("%s-task-%d", registrationID, n.TaskID)
+	case n.ProjectID != 0:
+		collapseID = fmt.Sprintf("%s-project-%d", registrationID, n.ProjectID)
+	}
+
+	payload, err = json.Marshal(struct {
 		APS struct {
-			Alert alert `json:"alert"`
+			Alert    alert  `json:"alert"`
+			ThreadID string `json:"thread-id,omitempty"`
 		} `json:"aps"`
 		Event string `json:"event"`
 	}{
 		APS: struct {
-			Alert alert `json:"alert"`
-		}{Alert: alert{Title: title, Body: Body(n)}},
+			Alert    alert  `json:"alert"`
+			ThreadID string `json:"thread-id,omitempty"`
+		}{Alert: alert{Title: title, Body: Body(n)}, ThreadID: threadID},
 		Event: n.Event,
 	})
+	return payload, collapseID, err
 }
 
 // bodyTemplates renders the alert body for each event notify.Map supports.

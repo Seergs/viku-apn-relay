@@ -70,7 +70,9 @@ var supported = map[string]bool{
 // assignee event) — push.Body is responsible for the per-field fallback.
 type Notification struct {
 	Event          string
+	TaskID         int64
 	TaskTitle      string
+	ProjectID      int64
 	ProjectName    string
 	ActorName      string
 	AssigneeName   string
@@ -88,9 +90,11 @@ type delivery struct {
 			Name string `json:"name"`
 		} `json:"doer"`
 		Task *struct {
+			ID    int64  `json:"id"`
 			Title string `json:"title"`
 		} `json:"task"`
 		Project *struct {
+			ID    int64  `json:"id"`
 			Title string `json:"title"`
 		} `json:"project"`
 		Assignee *struct {
@@ -145,9 +149,11 @@ func Map(body []byte, userID int64) (n Notification, ok bool, err error) {
 
 	n.Event = d.EventName
 	if d.Data.Task != nil {
+		n.TaskID = d.Data.Task.ID
 		n.TaskTitle = d.Data.Task.Title
 	}
 	if d.Data.Project != nil {
+		n.ProjectID = d.Data.Project.ID
 		n.ProjectName = d.Data.Project.Title
 	}
 	if d.Data.Doer != nil {

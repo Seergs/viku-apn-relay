@@ -116,7 +116,7 @@ func TestSendSucceedsWithSignedRequest(t *testing.T) {
 	c := newTestClient(t, ts)
 	payload := []byte(`{"aps":{"alert":{"title":"Inbox"}}}`)
 
-	if err := c.Send(context.Background(), "device-token-1", payload); err != nil {
+	if err := c.Send(context.Background(), "device-token-1", payload, "task-255"); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 	if last.Method != http.MethodPost || last.URL.Path != "/3/device/device-token-1" {
@@ -130,6 +130,9 @@ func TestSendSucceedsWithSignedRequest(t *testing.T) {
 	}
 	if got := last.Header.Get("apns-priority"); got != "10" {
 		t.Fatalf("apns-priority = %q", got)
+	}
+	if got := last.Header.Get("apns-collapse-id"); got != "task-255" {
+		t.Fatalf("apns-collapse-id = %q", got)
 	}
 	if string(*body) != string(payload) {
 		t.Fatalf("body = %q, want the payload unchanged", *body)
@@ -149,11 +152,23 @@ func TestSendSucceedsWithSignedRequest(t *testing.T) {
 	}
 }
 
+func TestSendOmitsCollapseIDHeaderWhenEmpty(t *testing.T) {
+	ts, last, _ := newTestServer(t, http.StatusOK, "")
+	c := newTestClient(t, ts)
+
+	if err := c.Send(context.Background(), "device-token-1", []byte(`{}`), ""); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if _, ok := last.Header["Apns-Collapse-Id"]; ok {
+		t.Fatalf("apns-collapse-id header sent with an empty collapse id: %v", last.Header)
+	}
+}
+
 func TestSendReturnsUnregisteredOn410(t *testing.T) {
 	ts, _, _ := newTestServer(t, http.StatusGone, "Unregistered")
 	c := newTestClient(t, ts)
 
-	err := c.Send(context.Background(), "device-token-1", []byte(`{}`))
+	err := c.Send(context.Background(), "device-token-1", []byte(`{}`), "")
 	if !errors.Is(err, ErrUnregistered) {
 		t.Fatalf("Send = %v, want ErrUnregistered", err)
 	}
@@ -163,7 +178,7 @@ func TestSendReturnsStatusErrorForOtherRejections(t *testing.T) {
 	ts, _, _ := newTestServer(t, http.StatusBadRequest, "BadDeviceToken")
 	c := newTestClient(t, ts)
 
-	err := c.Send(context.Background(), "device-token-1", []byte(`{}`))
+	err := c.Send(context.Background(), "device-token-1", []byte(`{}`), "")
 	var se *StatusError
 	if !errors.As(err, &se) {
 		t.Fatalf("Send = %v, want *StatusError", err)

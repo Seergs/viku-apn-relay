@@ -120,10 +120,11 @@ func parseKey(pemBytes []byte) (*ecdsa.PrivateKey, error) {
 	return key, nil
 }
 
-// Send delivers payload to deviceToken as an alert push. It returns
-// ErrUnregistered when APNs reports the token as unregistered, and a
-// *StatusError for any other rejection.
-func (c *Client) Send(ctx context.Context, deviceToken string, payload []byte) error {
+// Send delivers payload to deviceToken as an alert push. When collapseID is
+// non-empty, APNs replaces any still-queued delivery sharing it instead of
+// stacking another one. It returns ErrUnregistered when APNs reports the
+// token as unregistered, and a *StatusError for any other rejection.
+func (c *Client) Send(ctx context.Context, deviceToken string, payload []byte, collapseID string) error {
 	bearer, err := c.providerToken()
 	if err != nil {
 		return err
@@ -139,6 +140,9 @@ func (c *Client) Send(ctx context.Context, deviceToken string, payload []byte) e
 	req.Header.Set("apns-push-type", "alert")
 	req.Header.Set("apns-priority", "10")
 	req.Header.Set("content-type", "application/json")
+	if collapseID != "" {
+		req.Header.Set("apns-collapse-id", collapseID)
+	}
 
 	resp, err := c.http.Do(req)
 	if err != nil {

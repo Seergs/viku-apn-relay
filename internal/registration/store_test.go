@@ -16,7 +16,7 @@ func openTestStore(t *testing.T) *Store {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	t.Cleanup(func() { store.Close() })
+	t.Cleanup(func() { _ = store.Close() })
 	return store
 }
 
@@ -245,13 +245,13 @@ func TestOpenIsRepeatable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first Open: %v", err)
 	}
-	first.Close()
+	_ = first.Close()
 
 	second, err := Open(path)
 	if err != nil {
 		t.Fatalf("second Open on existing database: %v", err)
 	}
-	defer second.Close()
+	defer func() { _ = second.Close() }()
 	if _, err := second.db.Exec(`SELECT 1 FROM registrations`); err != nil {
 		t.Fatalf("schema missing after reopen: %v", err)
 	}

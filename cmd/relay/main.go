@@ -43,7 +43,7 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	api := registration.NewAPI(store, envOr("PUBLIC_BASE_URL", defaultBaseURL))
 	dispatcher := push.NewDispatcher(apnsClient, store, logger)

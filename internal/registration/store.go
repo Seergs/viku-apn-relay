@@ -55,7 +55,7 @@ func Open(path string) (*Store, error) {
 	// serialized and avoids SQLITE_BUSY under concurrent registrations.
 	db.SetMaxOpenConns(1)
 	if _, err := db.Exec(schema); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("apply schema: %w", err)
 	}
 	return &Store{db: db, now: time.Now}, nil
@@ -86,7 +86,7 @@ func (s *Store) Register(in NewRegistration) (Registration, error) {
 	if err != nil {
 		return Registration{}, fmt.Errorf("begin: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	var id string
 	err = tx.QueryRow(`SELECT id FROM registrations WHERE account_key = ?`, in.AccountKey).Scan(&id)

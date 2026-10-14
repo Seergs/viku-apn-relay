@@ -20,7 +20,7 @@ func TestRoutes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { store.Close() })
+	t.Cleanup(func() { _ = store.Close() })
 	h := New(stubWebhooks{}, registration.NewAPI(store, "https://relay.test"))
 
 	tests := []struct {

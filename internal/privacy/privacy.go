@@ -14,5 +14,5 @@ var page []byte
 // Handler serves the privacy statement as a static HTML page.
 func Handler(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Write(page)
+	_, _ = w.Write(page)
 }

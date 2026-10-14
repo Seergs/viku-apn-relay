@@ -84,7 +84,7 @@ func newTestServer(t *testing.T, status int, reason string) (*testServer, *http.
 		lastBody, _ = io.ReadAll(r.Body)
 		if status != http.StatusOK {
 			w.WriteHeader(status)
-			w.Write([]byte(`{"reason":"` + reason + `"}`))
+			_, _ = w.Write([]byte(`{"reason":"` + reason + `"}`))
 			return
 		}
 		w.WriteHeader(http.StatusOK)

@@ -19,6 +19,20 @@ import (
 // user 1 and its task is "Example task" in project "Inbox".
 const taskCreatedFixture = "../webhook/testdata/task_created.json"
 
+// tasksOverdueFixture is a tasks.overdue digest recorded from a live
+// instance: four tasks across two projects, "Inbox" (id 1) and "Example
+// Project" (id 7).
+const tasksOverdueFixture = "../webhook/testdata/tasks_overdue.json"
+
+func loadOverdueDigestFixture(t *testing.T) []byte {
+	t.Helper()
+	body, err := os.ReadFile(tasksOverdueFixture)
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	return body
+}
+
 type fakeSender struct {
 	err         error
 	tokens      []string
@@ -203,6 +217,145 @@ func TestDispatchRejectsMalformedBody(t *testing.T) {
 	}
 }
 
+func TestDispatchFansOutOverdueDigest(t *testing.T) {
+	var logs bytes.Buffer
+	s, r := &fakeSender{}, &fakeRemover{}
+	d := NewDispatcher(s, r, newLogger(&logs))
+
+	if err := d.Dispatch(target(1), loadOverdueDigestFixture(t)); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	if len(s.tokens) != 4 {
+		t.Fatalf("sent %d pushes, want one per task (4)", len(s.tokens))
+	}
+
+	var first struct {
+		APS struct {
+			Alert struct {
+				Title string `json:"title"`
+				Body  string `json:"body"`
+			} `json:"alert"`
+			ThreadID string `json:"thread-id"`
+		} `json:"aps"`
+	}
+	if err := json.Unmarshal(s.payloads[0], &first); err != nil {
+		t.Fatalf("payload is not JSON: %v", err)
+	}
+	// The fixture's first task is id 243 in project 7, "Example Project".
+	if first.APS.Alert.Title != "Example Project" || first.APS.Alert.Body != `"Example task 1" is overdue` {
+		t.Fatalf("payload = %+v", first)
+	}
+	if first.APS.ThreadID != "reg-1-project-7" {
+		t.Fatalf("thread-id = %q, want it namespaced by registration and project", first.APS.ThreadID)
+	}
+	if s.collapseIDs[0] != "reg-1-task-243" {
+		t.Fatalf("collapse-id = %q, want it namespaced by registration and task", s.collapseIDs[0])
+	}
+	// The fixture's second task (id 246) is in a different project (1,
+	// "Inbox"), so it must not share the first task's thread.
+	var second struct {
+		APS struct {
+			ThreadID string `json:"thread-id"`
+		} `json:"aps"`
+	}
+	if err := json.Unmarshal(s.payloads[1], &second); err != nil {
+		t.Fatalf("payload is not JSON: %v", err)
+	}
+	if second.APS.ThreadID == first.APS.ThreadID {
+		t.Fatalf("tasks from different projects shared a thread-id: %q", second.APS.ThreadID)
+	}
+	if len(r.ids) != 0 {
+		t.Fatal("registration removed after a successful digest")
+	}
+}
+
+func TestDispatchOverdueDigestStopsOnUnregistered(t *testing.T) {
+	var logs bytes.Buffer
+	s := &fakeSender{err: apns.ErrUnregistered}
+	r := &fakeRemover{}
+	d := NewDispatcher(s, r, newLogger(&logs))
+
+	if err := d.Dispatch(target(1), loadOverdueDigestFixture(t)); err != nil {
+		t.Fatalf("Dispatch on 410 = %v, want nil so the delivery is not retried", err)
+	}
+	if len(s.tokens) != 1 {
+		t.Fatalf("sent %d pushes, want the loop to stop after the first 410", len(s.tokens))
+	}
+	if len(r.ids) != 1 || r.ids[0] != "reg-1" {
+		t.Fatalf("removed %v, want [reg-1]", r.ids)
+	}
+}
+
+func TestDispatchOverdueDigestStopsOnRejectedPush(t *testing.T) {
+	var logs bytes.Buffer
+	s := &fakeSender{err: &apns.StatusError{Code: 400, Reason: "BadTopic"}}
+	r := &fakeRemover{}
+	d := NewDispatcher(s, r, newLogger(&logs))
+
+	if err := d.Dispatch(target(1), loadOverdueDigestFixture(t)); err == nil {
+		t.Fatal("Dispatch returned nil for a rejected push, so the handler would answer 200")
+	}
+	if len(s.tokens) != 1 {
+		t.Fatalf("sent %d pushes, want the loop to stop after the first rejection", len(s.tokens))
+	}
+}
+
+func TestDispatchOverdueDigestDropsEmptyDigest(t *testing.T) {
+	var logs bytes.Buffer
+	s := &fakeSender{}
+	d := NewDispatcher(s, &fakeRemover{}, newLogger(&logs))
+
+	body := []byte(`{"event_name":"tasks.overdue","data":{"tasks":[],"projects":{}}}`)
+	if err := d.Dispatch(target(1), body); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	if len(s.tokens) != 0 {
+		t.Fatal("empty digest sent a push")
+	}
+}
+
+func TestPayloadForTask(t *testing.T) {
+	p, collapseID, err := PayloadForTask(notify.OverdueTask{
+		TaskID: 243, TaskTitle: "Example task 1", ProjectID: 7, ProjectName: "Example Project",
+	}, "reg-1")
+	if err != nil {
+		t.Fatalf("PayloadForTask: %v", err)
+	}
+
+	var got struct {
+		APS struct {
+			Alert struct {
+				Title string `json:"title"`
+				Body  string `json:"body"`
+			} `json:"alert"`
+			ThreadID string `json:"thread-id"`
+		} `json:"aps"`
+		Event string `json:"event"`
+	}
+	if err := json.Unmarshal(p, &got); err != nil {
+		t.Fatalf("payload is not JSON: %v", err)
+	}
+	if got.APS.Alert.Title != "Example Project" || got.APS.Alert.Body != `"Example task 1" is overdue` || got.Event != notify.TasksOverdue {
+		t.Fatalf("payload = %+v", got)
+	}
+	if got.APS.ThreadID != "reg-1-project-7" {
+		t.Fatalf("thread-id = %q, want it namespaced by the registration id", got.APS.ThreadID)
+	}
+	if collapseID != "reg-1-task-243" {
+		t.Fatalf("collapse-id = %q, want it namespaced by the registration id", collapseID)
+	}
+}
+
+func TestPayloadForTaskFallsBackToVikunjaTitle(t *testing.T) {
+	p, _, err := PayloadForTask(notify.OverdueTask{TaskID: 1, TaskTitle: "Example task"}, "reg-1")
+	if err != nil {
+		t.Fatalf("PayloadForTask: %v", err)
+	}
+	if !strings.Contains(string(p), `"title":"Vikunja"`) {
+		t.Fatalf("payload = %s, want the fallback title", p)
+	}
+}
+
 func TestPayloadFallsBackToVikunjaTitle(t *testing.T) {
 	p, _, err := Payload(notify.Notification{Event: notify.ProjectUpdated}, "reg-1")
 	if err != nil {
@@ -237,7 +390,7 @@ func TestPayloadGroupingIDs(t *testing.T) {
 		},
 		{
 			name:           "no project or task means no grouping at all",
-			n:              notify.Notification{Event: notify.TasksOverdue},
+			n:              notify.Notification{Event: notify.ProjectDeleted},
 			wantThreadID:   "",
 			wantCollapseID: "",
 		},

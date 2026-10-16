@@ -20,8 +20,11 @@ The client side lives in the `vikunja-ios` repo.
 - **Secrets come from the environment or a secret store,** never from the repo, tests,
   fixtures, or docs. APNs credentials and per-device webhook secrets are both secrets.
 - **Drop self-caused events.** Project-level events where the actor is the registered user
-  are never pushed. User-level events (`task.overdue`, `task.reminder.fired`) are not dropped
-  by this rule.
+  are never pushed. User-level events (`task.overdue`, `task.reminder.fired`,
+  `tasks.overdue`) are not dropped by this rule.
+- **`tasks.overdue` fans out, it does not map to one notification.** It is a daily digest of
+  several tasks, so `push.Dispatch` sends one push per task (see `notify.MapOverdueDigest`
+  and `push.PayloadForTask`) instead of going through `notify.Map`.
 - **Unregister on APNs 410.** Delete the device registration when APNs reports it unregistered.
 
 ## Testing

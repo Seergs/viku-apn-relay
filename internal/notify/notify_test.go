@@ -335,6 +335,54 @@ func TestMapTaskAttachmentDeleted(t *testing.T) {
 	}
 }
 
+func TestMapOverdueDigest(t *testing.T) {
+	body, err := os.ReadFile("../webhook/testdata/tasks_overdue.json")
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+
+	got, err := MapOverdueDigest(body)
+	if err != nil {
+		t.Fatalf("MapOverdueDigest: %v", err)
+	}
+	want := []OverdueTask{
+		{TaskID: 243, TaskTitle: "Example task 1", ProjectID: 7, ProjectName: "Example Project"},
+		{TaskID: 246, TaskTitle: "Example task 2", ProjectID: 1, ProjectName: "Inbox"},
+		{TaskID: 247, TaskTitle: "Example task 3", ProjectID: 7, ProjectName: "Example Project"},
+		{TaskID: 242, TaskTitle: "Example task 4", ProjectID: 7, ProjectName: "Example Project"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("MapOverdueDigest = %+v, want %d tasks", got, len(want))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("task %d = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+}
+
+func TestMapOverdueDigestRejectsMalformedJSON(t *testing.T) {
+	if _, err := MapOverdueDigest([]byte(`{`)); err == nil {
+		t.Fatal("MapOverdueDigest accepted malformed JSON")
+	}
+}
+
+func TestIsOverdueDigest(t *testing.T) {
+	body, err := os.ReadFile("../webhook/testdata/tasks_overdue.json")
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	if ok, err := IsOverdueDigest(body); err != nil || !ok {
+		t.Fatalf("IsOverdueDigest(tasks.overdue) = %v, %v; want true, nil", ok, err)
+	}
+	if ok, err := IsOverdueDigest(loadFixture(t)); err != nil || ok {
+		t.Fatalf("IsOverdueDigest(task.created) = %v, %v; want false, nil", ok, err)
+	}
+	if _, err := IsOverdueDigest([]byte(`{`)); err == nil {
+		t.Fatal("IsOverdueDigest accepted malformed JSON")
+	}
+}
+
 func TestMapProjectSharedUser(t *testing.T) {
 	body, err := os.ReadFile("../webhook/testdata/project_shared_user.json")
 	if err != nil {

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"html"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -35,11 +36,11 @@ const (
 )
 
 // userLevel events are sent for the signed-in user, not for a project, so the
-// self-action rule never drops them.
+// self-action rule never drops them. TasksOverdue is not listed here: push.
+// Dispatch intercepts it before Map ever sees it (see MapOverdueDigest).
 var userLevel = map[string]bool{
 	TaskOverdue:       true,
 	TaskReminderFired: true,
-	TasksOverdue:      true,
 }
 
 var supported = map[string]bool{
@@ -61,7 +62,6 @@ var supported = map[string]bool{
 	TaskRelationDeleted:   true,
 	TaskReminderFired:     true,
 	TaskUpdated:           true,
-	TasksOverdue:          true,
 }
 
 // Notification is the normalized content the push package renders into an
@@ -106,7 +106,26 @@ type delivery struct {
 		Comment *struct {
 			Comment string `json:"comment"`
 		} `json:"comment"`
+		Tasks []struct {
+			ID        int64  `json:"id"`
+			Title     string `json:"title"`
+			ProjectID int64  `json:"project_id"`
+		} `json:"tasks"`
+		Projects map[string]struct {
+			ID    int64  `json:"id"`
+			Title string `json:"title"`
+		} `json:"projects"`
 	} `json:"data"`
+}
+
+// OverdueTask is one task out of a tasks.overdue digest, with its project
+// name already resolved. Unlike Notification, there is no ActorName: the
+// digest is a system-fired, user-level event with no doer.
+type OverdueTask struct {
+	TaskID      int64
+	TaskTitle   string
+	ProjectID   int64
+	ProjectName string
 }
 
 // commentExcerptLimit is the max rune length of CommentExcerpt. Vikunja
@@ -169,4 +188,39 @@ func Map(body []byte, userID int64) (n Notification, ok bool, err error) {
 		n.CommentExcerpt = plainTextExcerpt(d.Data.Comment.Comment)
 	}
 	return n, true, nil
+}
+
+// IsOverdueDigest reports whether body is a tasks.overdue delivery. push.
+// Dispatch checks this before Map, because a digest fans out into one push
+// per task instead of mapping to a single Notification.
+func IsOverdueDigest(body []byte) (bool, error) {
+	var d struct {
+		EventName string `json:"event_name"`
+	}
+	if err := json.Unmarshal(body, &d); err != nil {
+		return false, fmt.Errorf("decode delivery: %w", err)
+	}
+	return d.EventName == TasksOverdue, nil
+}
+
+// MapOverdueDigest parses a verified tasks.overdue delivery body into one
+// OverdueTask per task, each with its project name resolved from the
+// delivery's project map. A task whose project is missing from that map
+// (should not happen, but the field is attacker-controlled input) gets an
+// empty ProjectName; push.PayloadForTask falls back to "Vikunja" for it.
+func MapOverdueDigest(body []byte) ([]OverdueTask, error) {
+	var d delivery
+	if err := json.Unmarshal(body, &d); err != nil {
+		return nil, fmt.Errorf("decode delivery: %w", err)
+	}
+
+	tasks := make([]OverdueTask, 0, len(d.Data.Tasks))
+	for _, t := range d.Data.Tasks {
+		ot := OverdueTask{TaskID: t.ID, TaskTitle: t.Title, ProjectID: t.ProjectID}
+		if p, ok := d.Data.Projects[strconv.FormatInt(t.ProjectID, 10)]; ok {
+			ot.ProjectName = p.Title
+		}
+		tasks = append(tasks, ot)
+	}
+	return tasks, nil
 }

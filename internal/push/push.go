@@ -46,7 +46,18 @@ func NewDispatcher(sender Sender, remover Remover, logger *slog.Logger) *Dispatc
 // Dispatch pushes the notification for body to the target device. Deliveries
 // that map to no push return nil. A device APNs reports as unregistered is
 // removed and returns nil, because retrying cannot succeed.
+//
+// A tasks.overdue delivery is a digest of several tasks, not one event, so it
+// is fanned out into one push per task instead of going through notify.Map.
 func (d *Dispatcher) Dispatch(t webhook.Target, body []byte) error {
+	isDigest, err := notify.IsOverdueDigest(body)
+	if err != nil {
+		return err
+	}
+	if isDigest {
+		return d.dispatchOverdueDigest(t, body)
+	}
+
 	n, ok, err := notify.Map(body, t.VikunjaUserID)
 	if err != nil {
 		return err
@@ -64,27 +75,66 @@ func (d *Dispatcher) Dispatch(t webhook.Target, body []byte) error {
 	ctx, cancel := context.WithTimeout(context.Background(), sendTimeout)
 	defer cancel()
 
-	err = d.sender.Send(ctx, t.APNsToken, payload, collapseID)
-	switch {
-	case err == nil:
-		d.log.Info("push sent", "status", 200)
-		return nil
-	case errors.Is(err, apns.ErrUnregistered):
-		if rerr := d.remover.Remove(t.ID); rerr != nil {
-			d.log.Error("remove unregistered registration", "error", rerr)
-			return rerr
-		}
-		d.log.Info("registration removed", "status", 410, "reason", "Unregistered")
+	_, err = d.send(ctx, t, payload, collapseID)
+	return err
+}
+
+// dispatchOverdueDigest sends one push per task in a tasks.overdue delivery,
+// sharing each task's project thread-id so iOS stacks them together instead
+// of showing one row per task. It stops at the first task whose send fails:
+// on 410 Unregistered that means the registration is already gone, and on
+// any other error Vikunja will retry the whole digest.
+func (d *Dispatcher) dispatchOverdueDigest(t webhook.Target, body []byte) error {
+	tasks, err := notify.MapOverdueDigest(body)
+	if err != nil {
+		return err
+	}
+	if len(tasks) == 0 {
+		d.log.Info("delivery not pushed", "outcome", "dropped")
 		return nil
 	}
 
+	ctx, cancel := context.WithTimeout(context.Background(), sendTimeout)
+	defer cancel()
+
+	for _, task := range tasks {
+		payload, collapseID, err := PayloadForTask(task, t.ID)
+		if err != nil {
+			return err
+		}
+		if stop, err := d.send(ctx, t, payload, collapseID); stop {
+			return err
+		}
+	}
+	return nil
+}
+
+// send delivers one payload and handles the outcome the same way for every
+// caller: log and return nil on success, remove the registration on 410, or
+// log and return the error for anything else. stop reports whether the
+// caller's loop (if any) should send no further pushes to t.
+func (d *Dispatcher) send(ctx context.Context, t webhook.Target, payload []byte, collapseID string) (stop bool, err error) {
+	sendErr := d.sender.Send(ctx, t.APNsToken, payload, collapseID)
+	switch {
+	case sendErr == nil:
+		d.log.Info("push sent", "status", 200)
+		return false, nil
+	case errors.Is(sendErr, apns.ErrUnregistered):
+		if rerr := d.remover.Remove(t.ID); rerr != nil {
+			d.log.Error("remove unregistered registration", "error", rerr)
+			return true, rerr
+		}
+		d.log.Info("registration removed", "status", 410, "reason", "Unregistered")
+		return true, nil
+	}
+
 	var se *apns.StatusError
-	if errors.As(err, &se) {
+	if errors.As(sendErr, &se) {
 		d.log.Warn("push failed", "status", se.Code, "reason", se.Reason)
 	} else {
-		d.log.Error("push failed", "error", err)
+		d.log.Error("push failed", "error", sendErr)
 	}
-	return err
+	return true, sendErr
 }
 
 // alert is the APNs aps.alert object. The title stays the project name; the
@@ -136,6 +186,41 @@ func Payload(n notify.Notification, registrationID string) (payload []byte, coll
 			ThreadID string `json:"thread-id,omitempty"`
 		}{Alert: alert{Title: title, Body: Body(n)}, ThreadID: threadID},
 		Event: n.Event,
+	})
+	return payload, collapseID, err
+}
+
+// PayloadForTask builds the APNs JSON body for one task out of a
+// tasks.overdue digest, plus its apns-collapse-id. It mirrors Payload's
+// grouping scheme (thread-id by project, collapse-id by task, both
+// namespaced by registrationID) so a digest push stacks in the same thread
+// as any other notification about that project.
+func PayloadForTask(t notify.OverdueTask, registrationID string) (payload []byte, collapseID string, err error) {
+	title := t.ProjectName
+	if title == "" {
+		title = "Vikunja"
+	}
+
+	var threadID string
+	if t.ProjectID != 0 {
+		threadID = fmt.Sprintf("%s-project-%d", registrationID, t.ProjectID)
+	}
+	if t.TaskID != 0 {
+		collapseID = fmt.Sprintf("%s-task-%d", registrationID, t.TaskID)
+	}
+
+	payload, err = json.Marshal(struct {
+		APS struct {
+			Alert    alert  `json:"alert"`
+			ThreadID string `json:"thread-id,omitempty"`
+		} `json:"aps"`
+		Event string `json:"event"`
+	}{
+		APS: struct {
+			Alert    alert  `json:"alert"`
+			ThreadID string `json:"thread-id,omitempty"`
+		}{Alert: alert{Title: title, Body: fmt.Sprintf("%q is overdue", t.TaskTitle)}, ThreadID: threadID},
+		Event: notify.TasksOverdue,
 	})
 	return payload, collapseID, err
 }
@@ -206,9 +291,6 @@ var bodyTemplates = map[string]func(notify.Notification) string{
 	},
 	notify.TaskReminderFired: func(n notify.Notification) string {
 		return fmt.Sprintf("Reminder: %q", n.TaskTitle)
-	},
-	notify.TasksOverdue: func(notify.Notification) string {
-		return "You have overdue tasks"
 	},
 }
 

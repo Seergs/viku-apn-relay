@@ -60,7 +60,7 @@ func (f *fakeRemover) Remove(id string) error {
 const testToken = "device-token-secret-1234"
 
 func target(userID int64) webhook.Target {
-	return webhook.Target{ID: "reg-1", VikunjaUserID: userID, APNsToken: testToken}
+	return webhook.Target{ID: "reg-1", VikunjaUserID: userID, APNsToken: testToken, AccountKey: "account-1"}
 }
 
 func loadFixture(t *testing.T) []byte {
@@ -96,7 +96,10 @@ func TestDispatchSendsPushForAnotherUsersEvent(t *testing.T) {
 			} `json:"alert"`
 			ThreadID string `json:"thread-id"`
 		} `json:"aps"`
-		Event string `json:"event"`
+		Event      string `json:"event"`
+		TaskID     int64  `json:"task_id"`
+		ProjectID  int64  `json:"project_id"`
+		AccountKey string `json:"account_key"`
 	}
 	if err := json.Unmarshal(s.payloads[0], &got); err != nil {
 		t.Fatalf("payload is not JSON: %v", err)
@@ -108,6 +111,9 @@ func TestDispatchSendsPushForAnotherUsersEvent(t *testing.T) {
 	// its task is id 255.
 	if got.APS.ThreadID != "reg-1-project-1" {
 		t.Fatalf("thread-id = %q, want it namespaced by the registration id", got.APS.ThreadID)
+	}
+	if got.TaskID != 255 || got.ProjectID != 1 || got.AccountKey != "account-1" {
+		t.Fatalf("payload = %+v, want task_id 255, project_id 1, account_key %q so the app can resolve and open the task", got, "account-1")
 	}
 	if len(s.collapseIDs) != 1 || s.collapseIDs[0] != "reg-1-task-255" {
 		t.Fatalf("collapse-id = %v, want it namespaced by the registration id", s.collapseIDs)
@@ -237,6 +243,9 @@ func TestDispatchFansOutOverdueDigest(t *testing.T) {
 			} `json:"alert"`
 			ThreadID string `json:"thread-id"`
 		} `json:"aps"`
+		TaskID     int64  `json:"task_id"`
+		ProjectID  int64  `json:"project_id"`
+		AccountKey string `json:"account_key"`
 	}
 	if err := json.Unmarshal(s.payloads[0], &first); err != nil {
 		t.Fatalf("payload is not JSON: %v", err)
@@ -247,6 +256,9 @@ func TestDispatchFansOutOverdueDigest(t *testing.T) {
 	}
 	if first.APS.ThreadID != "reg-1-project-7" {
 		t.Fatalf("thread-id = %q, want it namespaced by registration and project", first.APS.ThreadID)
+	}
+	if first.TaskID != 243 || first.ProjectID != 7 || first.AccountKey != "account-1" {
+		t.Fatalf("payload = %+v, want task_id 243, project_id 7, account_key %q", first, "account-1")
 	}
 	if s.collapseIDs[0] != "reg-1-task-243" {
 		t.Fatalf("collapse-id = %q, want it namespaced by registration and task", s.collapseIDs[0])
@@ -317,7 +329,7 @@ func TestDispatchOverdueDigestDropsEmptyDigest(t *testing.T) {
 func TestPayloadForTask(t *testing.T) {
 	p, collapseID, err := PayloadForTask(notify.OverdueTask{
 		TaskID: 243, TaskTitle: "Example task 1", ProjectID: 7, ProjectName: "Example Project",
-	}, "reg-1")
+	}, "reg-1", "account-1")
 	if err != nil {
 		t.Fatalf("PayloadForTask: %v", err)
 	}
@@ -330,7 +342,10 @@ func TestPayloadForTask(t *testing.T) {
 			} `json:"alert"`
 			ThreadID string `json:"thread-id"`
 		} `json:"aps"`
-		Event string `json:"event"`
+		Event      string `json:"event"`
+		TaskID     int64  `json:"task_id"`
+		ProjectID  int64  `json:"project_id"`
+		AccountKey string `json:"account_key"`
 	}
 	if err := json.Unmarshal(p, &got); err != nil {
 		t.Fatalf("payload is not JSON: %v", err)
@@ -344,10 +359,13 @@ func TestPayloadForTask(t *testing.T) {
 	if collapseID != "reg-1-task-243" {
 		t.Fatalf("collapse-id = %q, want it namespaced by the registration id", collapseID)
 	}
+	if got.TaskID != 243 || got.ProjectID != 7 || got.AccountKey != "account-1" {
+		t.Fatalf("payload = %+v, want task_id 243, project_id 7, account_key %q", got, "account-1")
+	}
 }
 
 func TestPayloadForTaskFallsBackToVikunjaTitle(t *testing.T) {
-	p, _, err := PayloadForTask(notify.OverdueTask{TaskID: 1, TaskTitle: "Example task"}, "reg-1")
+	p, _, err := PayloadForTask(notify.OverdueTask{TaskID: 1, TaskTitle: "Example task"}, "reg-1", "account-1")
 	if err != nil {
 		t.Fatalf("PayloadForTask: %v", err)
 	}
@@ -357,7 +375,7 @@ func TestPayloadForTaskFallsBackToVikunjaTitle(t *testing.T) {
 }
 
 func TestPayloadFallsBackToVikunjaTitle(t *testing.T) {
-	p, _, err := Payload(notify.Notification{Event: notify.ProjectUpdated}, "reg-1")
+	p, _, err := Payload(notify.Notification{Event: notify.ProjectUpdated}, "reg-1", "account-1")
 	if err != nil {
 		t.Fatalf("Payload: %v", err)
 	}
@@ -366,6 +384,16 @@ func TestPayloadFallsBackToVikunjaTitle(t *testing.T) {
 	}
 	if !strings.Contains(string(p), `"body":"Someone updated the project"`) {
 		t.Fatalf("payload = %s, want a body with the actor fallback", p)
+	}
+}
+
+func TestPayloadOmitsTaskAndProjectIDWhenZero(t *testing.T) {
+	p, _, err := Payload(notify.Notification{Event: notify.ProjectDeleted}, "reg-1", "")
+	if err != nil {
+		t.Fatalf("Payload: %v", err)
+	}
+	if strings.Contains(string(p), "task_id") || strings.Contains(string(p), "project_id") || strings.Contains(string(p), "account_key") {
+		t.Fatalf("payload = %s, want task_id/project_id/account_key omitted when zero/empty", p)
 	}
 }
 
@@ -397,7 +425,7 @@ func TestPayloadGroupingIDs(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			p, collapseID, err := Payload(c.n, "reg-1")
+			p, collapseID, err := Payload(c.n, "reg-1", "account-1")
 			if err != nil {
 				t.Fatalf("Payload: %v", err)
 			}

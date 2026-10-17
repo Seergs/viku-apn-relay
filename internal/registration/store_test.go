@@ -54,6 +54,9 @@ func TestRegisterCreatesRegistration(t *testing.T) {
 	if !ok || !bytes.Equal(secret, testSecret) {
 		t.Fatalf("Secret(%q) = %q, %v; want the registered secret", reg.ID, secret, ok)
 	}
+	if target.AccountKey != "account-key-1" {
+		t.Fatalf("AccountKey = %q, want the registered account_key so the push payload can carry it", target.AccountKey)
+	}
 }
 
 func TestRegisterStoresOnlyTokenHash(t *testing.T) {

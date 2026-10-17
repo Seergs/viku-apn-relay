@@ -17,6 +17,7 @@ type Target struct {
 	Secret        []byte
 	VikunjaUserID int64
 	APNsToken     string
+	AccountKey    string
 }
 
 // Registrations maps an opaque registration id to its delivery target.

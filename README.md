@@ -84,6 +84,10 @@ then sends the matching push through APNs. Unknown ids and bad signatures both r
 A failed push returns `502` so the caller can retry. A device APNs reports as unregistered
 is removed from the store and returns `200`, because a retry cannot succeed.
 
+Alongside the `aps` alert, the push JSON carries `task_id`, `project_id` (both omitted when the
+event has none) and `account_key` (the registration's own, passed through unchanged), so the app
+can resolve and open the right task on tap without guessing which saved connection it belongs to.
+
 ### `GET /privacy`
 
 Serves the relay's privacy statement as a static HTML page, embedded in the binary

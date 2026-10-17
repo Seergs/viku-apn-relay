@@ -67,7 +67,7 @@ func (d *Dispatcher) Dispatch(t webhook.Target, body []byte) error {
 		return nil
 	}
 
-	payload, collapseID, err := Payload(n, t.ID)
+	payload, collapseID, err := Payload(n, t.ID, t.AccountKey)
 	if err != nil {
 		return err
 	}
@@ -98,7 +98,7 @@ func (d *Dispatcher) dispatchOverdueDigest(t webhook.Target, body []byte) error 
 	defer cancel()
 
 	for _, task := range tasks {
-		payload, collapseID, err := PayloadForTask(task, t.ID)
+		payload, collapseID, err := PayloadForTask(task, t.ID, t.AccountKey)
 		if err != nil {
 			return err
 		}
@@ -157,7 +157,14 @@ type alert struct {
 // group, or even collapse, notifications from unrelated accounts, so both are
 // namespaced with registrationID — webhook.Target.ID, already unique per
 // account per device (it's the same opaque id the webhook URL is built from).
-func Payload(n notify.Notification, registrationID string) (payload []byte, collapseID string, err error) {
+//
+// task_id/project_id/account_key ride alongside the alert as custom data so
+// the app can resolve and open the right task on tap: task_id/project_id are
+// only unique within accountKey's Vikunja instance, and the app may have
+// several accounts registered on this device, so accountKey (the app's own
+// account_key, passed through unchanged) is what tells it which saved
+// connection to resolve them against.
+func Payload(n notify.Notification, registrationID, accountKey string) (payload []byte, collapseID string, err error) {
 	title := n.ProjectName
 	if title == "" {
 		title = "Vikunja"
@@ -179,13 +186,19 @@ func Payload(n notify.Notification, registrationID string) (payload []byte, coll
 			Alert    alert  `json:"alert"`
 			ThreadID string `json:"thread-id,omitempty"`
 		} `json:"aps"`
-		Event string `json:"event"`
+		Event      string `json:"event"`
+		TaskID     int64  `json:"task_id,omitempty"`
+		ProjectID  int64  `json:"project_id,omitempty"`
+		AccountKey string `json:"account_key,omitempty"`
 	}{
 		APS: struct {
 			Alert    alert  `json:"alert"`
 			ThreadID string `json:"thread-id,omitempty"`
 		}{Alert: alert{Title: title, Body: Body(n)}, ThreadID: threadID},
-		Event: n.Event,
+		Event:      n.Event,
+		TaskID:     n.TaskID,
+		ProjectID:  n.ProjectID,
+		AccountKey: accountKey,
 	})
 	return payload, collapseID, err
 }
@@ -194,8 +207,9 @@ func Payload(n notify.Notification, registrationID string) (payload []byte, coll
 // tasks.overdue digest, plus its apns-collapse-id. It mirrors Payload's
 // grouping scheme (thread-id by project, collapse-id by task, both
 // namespaced by registrationID) so a digest push stacks in the same thread
-// as any other notification about that project.
-func PayloadForTask(t notify.OverdueTask, registrationID string) (payload []byte, collapseID string, err error) {
+// as any other notification about that project. See Payload for why
+// task_id/project_id/account_key ride alongside the alert.
+func PayloadForTask(t notify.OverdueTask, registrationID, accountKey string) (payload []byte, collapseID string, err error) {
 	title := t.ProjectName
 	if title == "" {
 		title = "Vikunja"
@@ -214,13 +228,19 @@ func PayloadForTask(t notify.OverdueTask, registrationID string) (payload []byte
 			Alert    alert  `json:"alert"`
 			ThreadID string `json:"thread-id,omitempty"`
 		} `json:"aps"`
-		Event string `json:"event"`
+		Event      string `json:"event"`
+		TaskID     int64  `json:"task_id,omitempty"`
+		ProjectID  int64  `json:"project_id,omitempty"`
+		AccountKey string `json:"account_key,omitempty"`
 	}{
 		APS: struct {
 			Alert    alert  `json:"alert"`
 			ThreadID string `json:"thread-id,omitempty"`
 		}{Alert: alert{Title: title, Body: fmt.Sprintf("%q is overdue", t.TaskTitle)}, ThreadID: threadID},
-		Event: notify.TasksOverdue,
+		Event:      notify.TasksOverdue,
+		TaskID:     t.TaskID,
+		ProjectID:  t.ProjectID,
+		AccountKey: accountKey,
 	})
 	return payload, collapseID, err
 }

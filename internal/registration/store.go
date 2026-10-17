@@ -139,8 +139,8 @@ func (s *Store) Delete(id, managementToken string) error {
 func (s *Store) Lookup(id string) (webhook.Target, bool) {
 	var t webhook.Target
 	err := s.db.QueryRow(
-		`SELECT webhook_secret, vikunja_user_id, apns_token FROM registrations WHERE id = ?`, id,
-	).Scan(&t.Secret, &t.VikunjaUserID, &t.APNsToken)
+		`SELECT webhook_secret, vikunja_user_id, apns_token, account_key FROM registrations WHERE id = ?`, id,
+	).Scan(&t.Secret, &t.VikunjaUserID, &t.APNsToken, &t.AccountKey)
 	if err != nil {
 		return webhook.Target{}, false
 	}

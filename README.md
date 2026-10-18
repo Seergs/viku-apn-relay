@@ -1,6 +1,6 @@
 # viku-apn-relay
 
-Push notifications for [Viku](https://github.com/Seergs/vikunja-ios), the iOS app for
+Push notifications for [Viku](https://github.com/Seergs/vikuapp), the iOS app for
 [Vikunja](https://vikunja.io).
 
 Vikunja can't send push notifications to iPhones on its own: that requires talking to Apple

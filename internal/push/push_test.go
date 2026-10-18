@@ -24,9 +24,22 @@ const taskCreatedFixture = "../webhook/testdata/task_created.json"
 // Project" (id 7).
 const tasksOverdueFixture = "../webhook/testdata/tasks_overdue.json"
 
+// taskReminderFiredFixture is a task.reminder.fired delivery: task 254,
+// "Example task", in project "Inbox" (id 1).
+const taskReminderFiredFixture = "../webhook/testdata/task_reminder_fired.json"
+
 func loadOverdueDigestFixture(t *testing.T) []byte {
 	t.Helper()
 	body, err := os.ReadFile(tasksOverdueFixture)
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	return body
+}
+
+func loadReminderFiredFixture(t *testing.T) []byte {
+	t.Helper()
+	body, err := os.ReadFile(taskReminderFiredFixture)
 	if err != nil {
 		t.Fatalf("read fixture: %v", err)
 	}
@@ -223,6 +236,31 @@ func TestDispatchRejectsMalformedBody(t *testing.T) {
 	}
 }
 
+func TestDispatchSetsReminderFiredCategory(t *testing.T) {
+	var logs bytes.Buffer
+	s, r := &fakeSender{}, &fakeRemover{}
+	d := NewDispatcher(s, r, newLogger(&logs))
+
+	if err := d.Dispatch(target(1), loadReminderFiredFixture(t)); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	if len(s.payloads) != 1 {
+		t.Fatalf("sent %d pushes, want 1", len(s.payloads))
+	}
+
+	var got struct {
+		APS struct {
+			Category string `json:"category"`
+		} `json:"aps"`
+	}
+	if err := json.Unmarshal(s.payloads[0], &got); err != nil {
+		t.Fatalf("payload is not JSON: %v", err)
+	}
+	if got.APS.Category != CategoryTaskReminderFired {
+		t.Fatalf("category = %q, want %q", got.APS.Category, CategoryTaskReminderFired)
+	}
+}
+
 func TestDispatchFansOutOverdueDigest(t *testing.T) {
 	var logs bytes.Buffer
 	s, r := &fakeSender{}, &fakeRemover{}
@@ -242,6 +280,7 @@ func TestDispatchFansOutOverdueDigest(t *testing.T) {
 				Body  string `json:"body"`
 			} `json:"alert"`
 			ThreadID string `json:"thread-id"`
+			Category string `json:"category"`
 		} `json:"aps"`
 		TaskID     int64  `json:"task_id"`
 		ProjectID  int64  `json:"project_id"`
@@ -253,6 +292,9 @@ func TestDispatchFansOutOverdueDigest(t *testing.T) {
 	// The fixture's first task is id 243 in project 7, "Example Project".
 	if first.APS.Alert.Title != "Example Project" || first.APS.Alert.Body != `"Example task 1" is overdue` {
 		t.Fatalf("payload = %+v", first)
+	}
+	if first.APS.Category != CategoryTaskOverdue {
+		t.Fatalf("category = %q, want %q", first.APS.Category, CategoryTaskOverdue)
 	}
 	if first.APS.ThreadID != "reg-1-project-7" {
 		t.Fatalf("thread-id = %q, want it namespaced by registration and project", first.APS.ThreadID)
@@ -364,6 +406,16 @@ func TestPayloadForTask(t *testing.T) {
 	}
 }
 
+func TestPayloadForTaskSetsOverdueCategory(t *testing.T) {
+	p, _, err := PayloadForTask(notify.OverdueTask{TaskID: 243, TaskTitle: "Example task 1"}, "reg-1", "account-1")
+	if err != nil {
+		t.Fatalf("PayloadForTask: %v", err)
+	}
+	if !strings.Contains(string(p), `"category":"TASK_OVERDUE"`) {
+		t.Fatalf("payload = %s, want aps.category set so iOS shows the overdue task's action buttons", p)
+	}
+}
+
 func TestPayloadForTaskFallsBackToVikunjaTitle(t *testing.T) {
 	p, _, err := PayloadForTask(notify.OverdueTask{TaskID: 1, TaskTitle: "Example task"}, "reg-1", "account-1")
 	if err != nil {
@@ -384,6 +436,26 @@ func TestPayloadFallsBackToVikunjaTitle(t *testing.T) {
 	}
 	if !strings.Contains(string(p), `"body":"Someone updated the project"`) {
 		t.Fatalf("payload = %s, want a body with the actor fallback", p)
+	}
+}
+
+func TestPayloadSetsReminderFiredCategory(t *testing.T) {
+	p, _, err := Payload(notify.Notification{Event: notify.TaskReminderFired, TaskID: 254}, "reg-1", "account-1")
+	if err != nil {
+		t.Fatalf("Payload: %v", err)
+	}
+	if !strings.Contains(string(p), `"category":"TASK_REMINDER_FIRED"`) {
+		t.Fatalf("payload = %s, want aps.category set so iOS shows the reminder's action buttons", p)
+	}
+}
+
+func TestPayloadOmitsCategoryForNonActionableEvent(t *testing.T) {
+	p, _, err := Payload(notify.Notification{Event: notify.TaskCreated, TaskID: 255}, "reg-1", "account-1")
+	if err != nil {
+		t.Fatalf("Payload: %v", err)
+	}
+	if strings.Contains(string(p), "category") {
+		t.Fatalf("payload = %s, want no aps.category for an event with no actions", p)
 	}
 }
 

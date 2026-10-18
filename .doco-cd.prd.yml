@@ -1,0 +1,19 @@
+# yaml-language-server: $schema=https://doco.cd/latest/schemas/deploy.schema.json
+#
+# Prod config. Read by the doco-cd daemon whose poll/webhook config sets
+# `target: prd`. Bump RELAY_TAG here (via PR) only after that same tag has
+# been validated in stg.
+name: viku-apn-relay-prd
+
+working_dir: deploy
+compose_files:
+  - compose.yaml
+
+environment:
+  RELAY_TAG: sha-e93ea41b0f6bc1c95177d7a67c187b50eb066d23
+  STACK_NAME: viku-apn-relay-prd
+  PUBLIC_BASE_URL: https://relay.viku.dev
+  HOST_PORT: "8081"
+  SECRETS_DIR: /home/deploy/viku-apn-relay/prd
+
+force_image_pull: true

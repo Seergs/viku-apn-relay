@@ -1,0 +1,19 @@
+# yaml-language-server: $schema=https://doco.cd/latest/schemas/deploy.schema.json
+#
+# Staging config. Read by the doco-cd daemon whose poll/webhook config has no
+# `target` set. Bump RELAY_TAG here (via PR) to push a new build to stg;
+# doco-cd picks up the merge and redeploys.
+name: viku-apn-relay-stg
+
+working_dir: deploy
+compose_files:
+  - compose.yaml
+
+environment:
+  RELAY_TAG: sha-ab9f6fdc7a94356757e365c10c178a43db66d997
+  STACK_NAME: viku-apn-relay-stg
+  PUBLIC_BASE_URL: https://relay-stg.viku.dev
+  HOST_PORT: "8080"
+  SECRETS_DIR: /home/deploy/viku-apn-relay/stg
+
+force_image_pull: true

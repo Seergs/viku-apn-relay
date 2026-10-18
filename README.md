@@ -130,51 +130,59 @@ DATABASE_PATH=./relay.db ADDR=:8080 go run ./cmd/relay
 
 ## Deployment
 
-The relay runs as a Docker Compose stack on a VPS, behind the Caddy instance that already serves
-`relay.viku.dev`. Caddy terminates TLS. The relay publishes its port on `127.0.0.1` only.
+The relay runs as two Docker Compose stacks (`stg` and `prd`) on the same VPS, behind the Caddy
+instance that already serves `relay.viku.dev` and `relay-stg.viku.dev`. Caddy terminates TLS. Each
+stack publishes its port on `127.0.0.1` only, on different host ports (`8080` for stg, `8081` for
+prd) so they don't collide.
 
 Images are built by `.github/workflows/image.yml` and pushed to `ghcr.io/seergs/viku-apn-relay`.
-Tags: the commit SHA, the branch name, `latest` for `main`, and the semver for `v*` tags.
+Tags: the commit SHA (`sha-<full-sha>`), the branch name, `latest` for `main`, and the semver for
+`v*` tags.
 
-### First deploy
+`deploy/compose.yaml` is shared by both stacks. What differs between stg and prd (`RELAY_TAG`,
+`STACK_NAME`, `PUBLIC_BASE_URL`, `HOST_PORT`, `SECRETS_DIR`) is supplied as interpolation variables
+by `.doco-cd.yml` (stg) and `.doco-cd.prd.yml` (prd) at the repo root. A
+[doco-cd](https://doco.cd) daemon on the server, one instance per stack, watches its own config
+file and redeploys `deploy/compose.yaml` whenever that file's `RELAY_TAG` changes.
 
-1. Put the APNs key on the server. It is a secret, so it never goes in `.env`:
+doco-cd checks out each deployed revision into its own directory (its own artifact storage,
+configured when doco-cd itself is set up), separate from wherever `.env` and the APNs key already
+live on the server. So `SECRETS_DIR` in each `.doco-cd*.yml` just points at the existing per-stack
+directory (`/home/deploy/viku-apn-relay/stg` and `/home/deploy/viku-apn-relay/prd`, adjust if the
+real home path differs) instead of a new location: nothing needs to move.
 
-   ```sh
-   mkdir -p ~/viku-apn-relay/secrets
-   # copy AuthKey_XXXX.p8 to ~/viku-apn-relay/secrets/apns_key.p8
-   sudo chown 65532:65532 ~/viku-apn-relay/secrets/apns_key.p8
-   chmod 400 ~/viku-apn-relay/secrets/apns_key.p8
-   ```
+### First deploy (per stack)
 
-   The container runs as uid 65532, so the key must be readable by that uid.
+The APNs key and `.env` already sit at `SECRETS_DIR/secrets/apns_key.p8` and `SECRETS_DIR/.env`
+for each stack; this repo never touches them. All that's new:
 
-2. Copy `compose.yaml` and `.env.example` to `~/viku-apn-relay/`. Then create `.env` from the
-   example and fill in `APNS_KEY_ID`, `APNS_TEAM_ID` and `APNS_TOPIC`.
+1. Point the doco-cd daemon for that stack at this repo, with `working_dir: deploy` and, for prd,
+   `target: prd` so it reads `.doco-cd.prd.yml` instead of `.doco-cd.yml`.
 
-3. Start the stack:
+2. Check it: `curl -s https://relay.viku.dev/healthz` (prd) or
+   `curl -s https://relay-stg.viku.dev/healthz` (stg) should return `200`.
 
-   ```sh
-   cd ~/viku-apn-relay
-   docker compose pull
-   docker compose up -d
-   docker compose logs -f relay
-   ```
+Caddy already proxies both domains to their respective `127.0.0.1` ports on the VPS; that config
+lives on the server, not in this repo.
 
-4. Check it: `curl -s https://relay.viku.dev/healthz` should return `200`.
+### Upgrade / rollback
 
-Caddy already proxies `relay.viku.dev` to `127.0.0.1:8080` on the VPS; that config lives on the
-server, not in this repo.
+The tag to run is tracked in Git, not on the server. Open a PR that bumps `RELAY_TAG`:
 
-### Upgrade
+- in `.doco-cd.yml` to push a build to stg,
+- in `.doco-cd.prd.yml` to promote a tag already validated in stg to prd.
 
-Pin `RELAY_TAG` in `.env` to the commit SHA you want, then:
+Once that PR merges, the matching doco-cd daemon picks up the change and redeploys. To roll back,
+open the same kind of PR with the previous SHA.
+
+Without doco-cd running (e.g. before it's set up on a stack), the same upgrade can be done by hand
+from a checkout of this repo, with `SECRETS_DIR` pointed at that stack's existing directory:
 
 ```sh
-docker compose pull && docker compose up -d
+cd deploy
+RELAY_TAG=<sha> SECRETS_DIR=/home/deploy/viku-apn-relay/<stg|prd> docker compose pull
+RELAY_TAG=<sha> SECRETS_DIR=/home/deploy/viku-apn-relay/<stg|prd> docker compose up -d
 ```
-
-To roll back, set `RELAY_TAG` to the previous SHA and run the same commands.
 
 ### Data
 

@@ -17,6 +17,16 @@ import (
 
 const sendTimeout = 10 * time.Second
 
+// Category identifiers sent as aps.category, matching the
+// UNNotificationCategory identifiers the iOS app registers. They tell iOS
+// which action buttons (snooze, reschedule) to show on a long-press of the
+// delivered notification; the app owns the action definitions, this relay
+// only needs to tag the event with the right category.
+const (
+	CategoryTaskReminderFired = "TASK_REMINDER_FIRED"
+	CategoryTaskOverdue       = "TASK_OVERDUE"
+)
+
 // Sender delivers one payload to one APNs device token. collapseID, when
 // non-empty, is sent as the apns-collapse-id header so APNs can replace a
 // still-queued delivery for the same task/project instead of stacking it.
@@ -144,6 +154,18 @@ type alert struct {
 	Body  string `json:"body,omitempty"`
 }
 
+// categoryFor returns the aps.category value for event, or "" for an event
+// with no actions defined. Only the two user-directed events the app offers
+// actions for are mapped; every other event stays a plain alert.
+func categoryFor(event string) string {
+	switch event {
+	case notify.TaskReminderFired:
+		return CategoryTaskReminderFired
+	default:
+		return ""
+	}
+}
+
 // Payload builds the APNs JSON body for n, plus the apns-collapse-id header
 // value Dispatch should send alongside it (empty when there's nothing to
 // collapse against, e.g. the tasks.overdue digest).
@@ -185,6 +207,7 @@ func Payload(n notify.Notification, registrationID, accountKey string) (payload 
 		APS struct {
 			Alert    alert  `json:"alert"`
 			ThreadID string `json:"thread-id,omitempty"`
+			Category string `json:"category,omitempty"`
 		} `json:"aps"`
 		Event      string `json:"event"`
 		TaskID     int64  `json:"task_id,omitempty"`
@@ -194,7 +217,8 @@ func Payload(n notify.Notification, registrationID, accountKey string) (payload 
 		APS: struct {
 			Alert    alert  `json:"alert"`
 			ThreadID string `json:"thread-id,omitempty"`
-		}{Alert: alert{Title: title, Body: Body(n)}, ThreadID: threadID},
+			Category string `json:"category,omitempty"`
+		}{Alert: alert{Title: title, Body: Body(n)}, ThreadID: threadID, Category: categoryFor(n.Event)},
 		Event:      n.Event,
 		TaskID:     n.TaskID,
 		ProjectID:  n.ProjectID,
@@ -227,6 +251,7 @@ func PayloadForTask(t notify.OverdueTask, registrationID, accountKey string) (pa
 		APS struct {
 			Alert    alert  `json:"alert"`
 			ThreadID string `json:"thread-id,omitempty"`
+			Category string `json:"category,omitempty"`
 		} `json:"aps"`
 		Event      string `json:"event"`
 		TaskID     int64  `json:"task_id,omitempty"`
@@ -236,7 +261,12 @@ func PayloadForTask(t notify.OverdueTask, registrationID, accountKey string) (pa
 		APS: struct {
 			Alert    alert  `json:"alert"`
 			ThreadID string `json:"thread-id,omitempty"`
-		}{Alert: alert{Title: title, Body: fmt.Sprintf("%q is overdue", t.TaskTitle)}, ThreadID: threadID},
+			Category string `json:"category,omitempty"`
+		}{
+			Alert:    alert{Title: title, Body: fmt.Sprintf("%q is overdue", t.TaskTitle)},
+			ThreadID: threadID,
+			Category: CategoryTaskOverdue,
+		},
 		Event:      notify.TasksOverdue,
 		TaskID:     t.TaskID,
 		ProjectID:  t.ProjectID,

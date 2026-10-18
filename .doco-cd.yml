@@ -10,7 +10,7 @@ compose_files:
   - compose.yaml
 
 environment:
-  RELAY_TAG: sha-ab9f6fdc7a94356757e365c10c178a43db66d997
+  RELAY_TAG: sha-67600112a399aac46145e69efb9f3d612b27674c
   STACK_NAME: viku-apn-relay-stg
   PUBLIC_BASE_URL: https://relay-stg.viku.dev
   HOST_PORT: "8080"

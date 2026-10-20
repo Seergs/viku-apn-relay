@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Seergs/viku-apn-relay/internal/apns"
+	"github.com/Seergs/viku-apn-relay/internal/dedup"
 	"github.com/Seergs/viku-apn-relay/internal/notify"
 	"github.com/Seergs/viku-apn-relay/internal/webhook"
 )
@@ -45,12 +46,33 @@ type Dispatcher struct {
 	sender  Sender
 	remover Remover
 	log     *slog.Logger
+	dedupe  *dedup.Cache
 }
 
 // NewDispatcher returns a Dispatcher that sends through sender and removes
-// registrations through remover.
-func NewDispatcher(sender Sender, remover Remover, logger *slog.Logger) *Dispatcher {
-	return &Dispatcher{sender: sender, remover: remover, log: logger}
+// registrations through remover. dedupe collapses a delivery the relay
+// already pushed, or is already in the middle of pushing, for the same
+// registration/event/task/user within its window. See the dedup package
+// doc for why that happens even for a single Vikunja event.
+func NewDispatcher(sender Sender, remover Remover, logger *slog.Logger, dedupe *dedup.Cache) *Dispatcher {
+	return &Dispatcher{sender: sender, remover: remover, log: logger, dedupe: dedupe}
+}
+
+// dedupKey identifies one real-world occurrence of event for task within
+// registrationID: the same registration, event, and task, directed at the
+// same user (0 when the event has no target user). Two deliveries that
+// share this key are the same occurrence reaching this device twice, for
+// example a user-level and a project-level webhook both matching the same
+// reminder, not two different things that happen to share a task.
+//
+// Only call this for an event notify.IsUserDirected reports true for. Every
+// other event's TaskID does not uniquely identify one occurrence (several
+// different comments on the same task share a TaskID, and project-level
+// events with no task share TaskID 0 regardless of which project they are
+// about), so deduping those would risk dropping a second, genuinely
+// different event.
+func dedupKey(registrationID, event string, taskID, userID int64) string {
+	return fmt.Sprintf("%s|%s|%d|%d", registrationID, event, taskID, userID)
 }
 
 // Dispatch pushes the notification for body to the target device. Deliveries
@@ -59,7 +81,7 @@ func NewDispatcher(sender Sender, remover Remover, logger *slog.Logger) *Dispatc
 //
 // A tasks.overdue delivery is a digest of several tasks, not one event, so it
 // is fanned out into one push per task instead of going through notify.Map.
-func (d *Dispatcher) Dispatch(t webhook.Target, body []byte) error {
+func (d *Dispatcher) Dispatch(t webhook.Target, body []byte) (err error) {
 	isDigest, err := notify.IsOverdueDigest(body)
 	if err != nil {
 		return err
@@ -75,6 +97,17 @@ func (d *Dispatcher) Dispatch(t webhook.Target, body []byte) error {
 	if !ok {
 		d.log.Info("delivery not pushed", "outcome", "dropped")
 		return nil
+	}
+
+	if notify.IsUserDirected(n.Event) {
+		proceed, release := d.dedupe.Claim(dedupKey(t.ID, n.Event, n.TaskID, n.EventUserID))
+		if !proceed {
+			d.log.Info("delivery not pushed", "outcome", "deduped")
+			return nil
+		}
+		// err's final value, set by the send below, decides whether this
+		// claim is remembered as sent or cleared so a retry can try again.
+		defer func() { release(err == nil) }()
 	}
 
 	payload, collapseID, err := Payload(n, t.ID, t.AccountKey)
@@ -94,6 +127,12 @@ func (d *Dispatcher) Dispatch(t webhook.Target, body []byte) error {
 // of showing one row per task. It stops at the first task whose send fails:
 // on 410 Unregistered that means the registration is already gone, and on
 // any other error Vikunja will retry the whole digest.
+//
+// Every task here is always a real, distinct task (there is no placeholder
+// zero TaskID the way an ordinary project event can have), and the event is
+// always tasks.overdue, so this path dedupes every task unconditionally;
+// there is no notify.IsUserDirected check to make, unlike Dispatch's single-
+// event path, which handles every event type.
 func (d *Dispatcher) dispatchOverdueDigest(t webhook.Target, body []byte) error {
 	tasks, err := notify.MapOverdueDigest(body)
 	if err != nil {
@@ -104,15 +143,29 @@ func (d *Dispatcher) dispatchOverdueDigest(t webhook.Target, body []byte) error 
 		return nil
 	}
 
+	userID, err := notify.DigestUserID(body)
+	if err != nil {
+		return err
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), sendTimeout)
 	defer cancel()
 
 	for _, task := range tasks {
+		proceed, release := d.dedupe.Claim(dedupKey(t.ID, notify.TasksOverdue, task.TaskID, userID))
+		if !proceed {
+			d.log.Info("delivery not pushed", "outcome", "deduped")
+			continue
+		}
+
 		payload, collapseID, err := PayloadForTask(task, t.ID, t.AccountKey)
 		if err != nil {
+			release(false)
 			return err
 		}
-		if stop, err := d.send(ctx, t, payload, collapseID); stop {
+		stop, err := d.send(ctx, t, payload, collapseID)
+		release(err == nil)
+		if stop {
 			return err
 		}
 	}

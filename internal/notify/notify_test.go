@@ -282,7 +282,7 @@ func TestMapTaskReminderFired(t *testing.T) {
 		t.Fatalf("read fixture: %v", err)
 	}
 
-	// The fixture's data.user (the reminder's target) is id 1 — EventUserID
+	// The fixture's data.user (the reminder's target) is id 1. EventUserID
 	// comes from that field, not from the registered userID argument below,
 	// so it stays 1 regardless of which device's registration is passed in.
 	want := Notification{Event: TaskReminderFired, TaskID: 254, TaskTitle: "Example task", ProjectID: 1, ProjectName: "Inbox", EventUserID: 1}
@@ -294,6 +294,24 @@ func TestMapTaskReminderFired(t *testing.T) {
 		}
 		if n != want {
 			t.Fatalf("Map for user %d = %+v, want %+v", userID, n, want)
+		}
+	}
+}
+
+func TestIsUserDirected(t *testing.T) {
+	cases := []struct {
+		event string
+		want  bool
+	}{
+		{TaskReminderFired, true},
+		{TaskOverdue, true},
+		{TaskCommentCreated, false},
+		{ProjectUpdated, false},
+		{TaskCreated, false},
+	}
+	for _, c := range cases {
+		if got := IsUserDirected(c.event); got != c.want {
+			t.Fatalf("IsUserDirected(%q) = %v, want %v", c.event, got, c.want)
 		}
 	}
 }

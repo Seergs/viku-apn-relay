@@ -94,16 +94,24 @@ A user-directed event (`task.overdue`, `task.reminder.fired`, `tasks.overdue`) c
 match both a project-level and a user-level webhook for the same registration: this happens when
 the event's target user is also a project member who separately turned on project-level
 notifications for that project. Vikunja's `WebhookListener.Handle` has no cross-webhook
-deduplication of its own — it dispatches one HTTP delivery per matching webhook row, so the relay
+deduplication of its own, it dispatches one HTTP delivery per matching webhook row, so the relay
 receives the exact same reminder twice at the same `/h/{id}` URL.
 
 `internal/dedup.Cache` (wired into `push.Dispatcher`, constructed once in `cmd/relay/main.go` with
-a 30s window) collapses this: before sending, `Dispatch` builds a key from
-`registration id + event name + task id + the event's target user id` (parsed from the delivery's
-own `data.user` field, not the registration's stored `vikunja_user_id`) and skips the send if that
-exact key was already seen within the window. Two different users' reminders on the same task —
-e.g. a project-level webhook delivering a project-mate's reminder, not your own — are **not**
-deduplicated against each other, because the target user id differs.
+a 30s window) collapses this, but only for the three events above (`notify.IsUserDirected`).
+Every other event's `task_id` does not uniquely identify one occurrence on its own (several
+different comments on the same task share a `task_id`, and project-level events with no task share
+`task_id` 0 regardless of which project they are about), so deduping them would risk dropping a
+second, genuinely different event rather than a true duplicate.
+
+For an eligible event, `Dispatch` claims a key built from `registration id + event name + task id +
+the event's target user id` (parsed from the delivery's own `data.user` field, not the
+registration's stored `vikunja_user_id`) before attempting the send, and skips the send if that key
+is already claimed. The claim is released as sent only once APNs actually accepts the push: a
+failed send clears the claim immediately, so a delivery Vikunja retries after a failure is not
+mistaken for a duplicate and silently dropped. Two different users' reminders on the same task
+(for example a project-level webhook delivering a project-mate's reminder, not your own) are
+**not** deduplicated against each other, because the target user id differs.
 
 This is deliberately different from the existing `apns-collapse-id` header (see `push.Payload`):
 collapse-id only replaces a still-queued, undelivered notification at APNs and does not carry a
@@ -111,10 +119,10 @@ user id, so it cannot distinguish "my reminder, sent twice" from "two different 
 on the same task," and does nothing once the first notification has already been delivered.
 
 **Single-instance assumption.** The cache is an in-memory `map` guarded by a mutex, with no shared
-backing store — this works only because the relay runs as one process per stack (see
+backing store, this works only because the relay runs as one process per stack (see
 [Deployment](#deployment)). If this ever runs as multiple instances behind a load balancer, each
 instance would hold its own cache, and two deliveries for the same event could land on different
-instances and both get pushed — the dedup would silently stop working. Scaling out would need this
+instances and both get pushed: the dedup would silently stop working. Scaling out would need this
 moved to shared state first: either a dedicated store (e.g. Redis, `SETNX` with a TTL) or a table
 in the existing SQLite database with a `UNIQUE` constraint on the key, so a second insert for the
 same key fails instead of a second push going out.

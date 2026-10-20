@@ -6,76 +6,114 @@ import (
 	"time"
 )
 
-func TestSeenRecentlyFirstCallIsNotADuplicate(t *testing.T) {
-	c := New(time.Minute)
-	defer c.Close()
+func newTestCache(t *testing.T, window time.Duration) *Cache {
+	t.Helper()
+	c := New(window)
+	t.Cleanup(c.Close)
+	return c
+}
 
-	if c.SeenRecently("a") {
-		t.Fatal("first call reported a duplicate")
+func TestClaimFirstCallProceeds(t *testing.T) {
+	c := newTestCache(t, time.Minute)
+
+	proceed, _ := c.Claim("a")
+	if !proceed {
+		t.Fatal("first claim did not proceed")
 	}
 }
 
-func TestSeenRecentlyWithinWindowIsADuplicate(t *testing.T) {
-	c := New(time.Minute)
-	defer c.Close()
+func TestClaimWithinWindowAfterSuccessIsADuplicate(t *testing.T) {
+	c := newTestCache(t, time.Minute)
 
-	c.SeenRecently("a")
-	if !c.SeenRecently("a") {
-		t.Fatal("second call within the window was not reported as a duplicate")
+	proceed, release := c.Claim("a")
+	if !proceed {
+		t.Fatal("first claim did not proceed")
+	}
+	release(true)
+
+	if proceed, _ := c.Claim("a"); proceed {
+		t.Fatal("second claim within the window proceeded after a successful send")
 	}
 }
 
-func TestSeenRecentlyDifferentKeysAreIndependent(t *testing.T) {
-	c := New(time.Minute)
-	defer c.Close()
+func TestClaimAfterFailureAllowsAnotherAttempt(t *testing.T) {
+	c := newTestCache(t, time.Minute)
 
-	c.SeenRecently("a")
-	if c.SeenRecently("b") {
-		t.Fatal("a different key was reported as a duplicate")
+	proceed, release := c.Claim("a")
+	if !proceed {
+		t.Fatal("first claim did not proceed")
+	}
+	release(false)
+
+	if proceed, _ := c.Claim("a"); !proceed {
+		t.Fatal("claim after a failed send did not proceed, so a retry would be silently dropped")
 	}
 }
 
-func TestSeenRecentlyAfterWindowIsNotADuplicate(t *testing.T) {
-	c := New(20 * time.Millisecond)
-	defer c.Close()
+func TestClaimWhileInFlightIsADuplicate(t *testing.T) {
+	c := newTestCache(t, time.Minute)
 
-	c.SeenRecently("a")
+	proceed, _ := c.Claim("a")
+	if !proceed {
+		t.Fatal("first claim did not proceed")
+	}
+
+	if proceed, _ := c.Claim("a"); proceed {
+		t.Fatal("a second claim while the first is still in flight proceeded")
+	}
+}
+
+func TestClaimDifferentKeysAreIndependent(t *testing.T) {
+	c := newTestCache(t, time.Minute)
+
+	c.Claim("a")
+	if proceed, _ := c.Claim("b"); !proceed {
+		t.Fatal("a different key did not proceed")
+	}
+}
+
+func TestClaimAfterWindowElapsedAllowsAnotherAttempt(t *testing.T) {
+	c := newTestCache(t, 20*time.Millisecond)
+
+	_, release := c.Claim("a")
+	release(true)
+
 	time.Sleep(40 * time.Millisecond)
-	if c.SeenRecently("a") {
-		t.Fatal("call after the window elapsed was reported as a duplicate")
+	if proceed, _ := c.Claim("a"); !proceed {
+		t.Fatal("claim after the window elapsed did not proceed")
 	}
 }
 
-// TestSeenRecentlyConcurrentCallsAgreeOnExactlyOneWinner reproduces the
-// scenario this package exists for: two goroutines (one per net/http
-// connection) call SeenRecently with the same key at nearly the same
-// instant. Run with -race; a broken check-then-set implementation (read the
-// map, then write it, as two separate steps) would let both calls observe
-// "not seen" and race the write, which -race flags even if the counts below
-// still happened to come out right.
-func TestSeenRecentlyConcurrentCallsAgreeOnExactlyOneWinner(t *testing.T) {
-	c := New(time.Minute)
-	defer c.Close()
+// TestClaimConcurrentCallsAgreeOnExactlyOneWinner reproduces the scenario
+// this package exists for: two goroutines (one per net/http connection)
+// call Claim with the same key at nearly the same instant. Run with -race;
+// a broken check-then-set implementation (read the map, then write it, as
+// two separate steps) would let both calls proceed and race the write,
+// which -race flags even if the counts below still happened to come out
+// right.
+func TestClaimConcurrentCallsAgreeOnExactlyOneWinner(t *testing.T) {
+	c := newTestCache(t, time.Minute)
 
 	const goroutines = 50
 	var wg sync.WaitGroup
-	var firstCount int32
+	var winners int32
 	var mu sync.Mutex
 
 	wg.Add(goroutines)
 	for range goroutines {
 		go func() {
 			defer wg.Done()
-			if !c.SeenRecently("race-key") {
+			if proceed, release := c.Claim("race-key"); proceed {
 				mu.Lock()
-				firstCount++
+				winners++
 				mu.Unlock()
+				release(true)
 			}
 		}()
 	}
 	wg.Wait()
 
-	if firstCount != 1 {
-		t.Fatalf("goroutines that saw 'not a duplicate' = %d, want exactly 1", firstCount)
+	if winners != 1 {
+		t.Fatalf("goroutines that proceeded = %d, want exactly 1", winners)
 	}
 }

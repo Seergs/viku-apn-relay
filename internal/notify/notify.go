@@ -43,6 +43,19 @@ var userLevel = map[string]bool{
 	TaskReminderFired: true,
 }
 
+// IsUserDirected reports whether event is one of the few events whose scope
+// overlap, a project-level and a user-level webhook both matching, can
+// legitimately deliver the exact same occurrence twice to one device. Only
+// these are eligible for push.Dispatcher's dedup: every other event's
+// TaskID is not unique to one occurrence (several different comments on the
+// same task share a TaskID, and several different project-level events
+// share ProjectID 0 since they have none), so deduping them would risk
+// dropping two genuinely different events that happen to land within the
+// same window.
+func IsUserDirected(event string) bool {
+	return userLevel[event]
+}
+
 var supported = map[string]bool{
 	ProjectDeleted:        true,
 	ProjectSharedTeam:     true,
@@ -81,7 +94,7 @@ type Notification struct {
 	// EventUserID is the id of the user a userLevel event is directed at
 	// (from the payload's own data.user field), zero for every other event.
 	// It is NOT the registered device's own Vikunja user id (see Map's
-	// userID parameter) — it is what lets push.Dispatcher's dedup tell apart
+	// userID parameter). It is what lets push.Dispatcher's dedup tell apart
 	// "my own reminder, delivered twice" (same EventUserID, a true
 	// duplicate when a project-level and a user-level webhook both match)
 	// from "a project-mate's reminder" (a different EventUserID, not a
@@ -221,8 +234,8 @@ func IsOverdueDigest(body []byte) (bool, error) {
 // DigestUserID returns the id of the user a tasks.overdue digest is
 // directed at. Every task in one digest shares the same user (Vikunja
 // dispatches one TasksOverdueEvent per user with all of that user's overdue
-// tasks attached), so this is read once per delivery rather than per task —
-// see push.Dispatcher's per-task dedup key in dispatchOverdueDigest.
+// tasks attached), so this is read once per delivery rather than per task.
+// See push.Dispatcher's per-task dedup key in dispatchOverdueDigest.
 func DigestUserID(body []byte) (int64, error) {
 	var d delivery
 	if err := json.Unmarshal(body, &d); err != nil {

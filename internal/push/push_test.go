@@ -92,17 +92,21 @@ func newLogger(buf *bytes.Buffer) *slog.Logger {
 }
 
 // newDispatcher builds a Dispatcher with a fresh dedup cache, long enough
-// that nothing in these tests crosses its window by accident. Tests that
+// that nothing in these tests crosses its window by accident, and registers
+// the cache's eviction goroutine to stop when the test ends. Tests that
 // exercise dedup itself build their own Dispatcher with an explicit cache
 // instead of using this helper.
-func newDispatcher(s Sender, r Remover, logger *slog.Logger) *Dispatcher {
-	return NewDispatcher(s, r, logger, dedup.New(time.Minute))
+func newDispatcher(t *testing.T, s Sender, r Remover, logger *slog.Logger) *Dispatcher {
+	t.Helper()
+	c := dedup.New(time.Minute)
+	t.Cleanup(c.Close)
+	return NewDispatcher(s, r, logger, c)
 }
 
 func TestDispatchSendsPushForAnotherUsersEvent(t *testing.T) {
 	var logs bytes.Buffer
 	s, r := &fakeSender{}, &fakeRemover{}
-	d := newDispatcher(s, r, newLogger(&logs))
+	d := newDispatcher(t, s, r, newLogger(&logs))
 
 	if err := d.Dispatch(target(2), loadFixture(t)); err != nil {
 		t.Fatalf("Dispatch: %v", err)
@@ -156,10 +160,10 @@ func TestDispatchScopesGroupingPerRegistrationNotPerVikunjaID(t *testing.T) {
 	targetA := webhook.Target{ID: "account-a", VikunjaUserID: 2, APNsToken: testToken}
 	targetB := webhook.Target{ID: "account-b", VikunjaUserID: 2, APNsToken: testToken}
 
-	if err := newDispatcher(sA, &fakeRemover{}, newLogger(&logsA)).Dispatch(targetA, loadFixture(t)); err != nil {
+	if err := newDispatcher(t, sA, &fakeRemover{}, newLogger(&logsA)).Dispatch(targetA, loadFixture(t)); err != nil {
 		t.Fatalf("Dispatch A: %v", err)
 	}
-	if err := newDispatcher(sB, &fakeRemover{}, newLogger(&logsB)).Dispatch(targetB, loadFixture(t)); err != nil {
+	if err := newDispatcher(t, sB, &fakeRemover{}, newLogger(&logsB)).Dispatch(targetB, loadFixture(t)); err != nil {
 		t.Fatalf("Dispatch B: %v", err)
 	}
 
@@ -171,7 +175,7 @@ func TestDispatchScopesGroupingPerRegistrationNotPerVikunjaID(t *testing.T) {
 func TestDispatchDropsSelfCausedEvent(t *testing.T) {
 	var logs bytes.Buffer
 	s, r := &fakeSender{}, &fakeRemover{}
-	d := newDispatcher(s, r, newLogger(&logs))
+	d := newDispatcher(t, s, r, newLogger(&logs))
 
 	// The fixture's doer is user 1, so registering user 1 makes the event self-caused.
 	if err := d.Dispatch(target(1), loadFixture(t)); err != nil {
@@ -186,7 +190,7 @@ func TestDispatchRemovesUnregisteredDevice(t *testing.T) {
 	var logs bytes.Buffer
 	s := &fakeSender{err: apns.ErrUnregistered}
 	r := &fakeRemover{}
-	d := newDispatcher(s, r, newLogger(&logs))
+	d := newDispatcher(t, s, r, newLogger(&logs))
 
 	if err := d.Dispatch(target(2), loadFixture(t)); err != nil {
 		t.Fatalf("Dispatch on 410 = %v, want nil so the delivery is not retried", err)
@@ -200,7 +204,7 @@ func TestDispatchReturnsErrorWhenRemovalFails(t *testing.T) {
 	var logs bytes.Buffer
 	s := &fakeSender{err: apns.ErrUnregistered}
 	r := &fakeRemover{err: errors.New("db down")}
-	d := newDispatcher(s, r, newLogger(&logs))
+	d := newDispatcher(t, s, r, newLogger(&logs))
 
 	if err := d.Dispatch(target(2), loadFixture(t)); err == nil {
 		t.Fatal("Dispatch hid a failed removal")
@@ -211,7 +215,7 @@ func TestDispatchReturnsErrorForRejectedPush(t *testing.T) {
 	var logs bytes.Buffer
 	s := &fakeSender{err: &apns.StatusError{Code: 400, Reason: "BadTopic"}}
 	r := &fakeRemover{}
-	d := newDispatcher(s, r, newLogger(&logs))
+	d := newDispatcher(t, s, r, newLogger(&logs))
 
 	err := d.Dispatch(target(2), loadFixture(t))
 	if err == nil {
@@ -225,7 +229,7 @@ func TestDispatchReturnsErrorForRejectedPush(t *testing.T) {
 func TestDispatchLogsNeverContainTokenOrTaskContent(t *testing.T) {
 	var logs bytes.Buffer
 	s := &fakeSender{err: &apns.StatusError{Code: 400, Reason: "BadDeviceToken"}}
-	d := newDispatcher(s, &fakeRemover{}, newLogger(&logs))
+	d := newDispatcher(t, s, &fakeRemover{}, newLogger(&logs))
 
 	_ = d.Dispatch(target(2), loadFixture(t))
 	out := logs.String()
@@ -244,7 +248,7 @@ func TestDispatchDedupesSameTaskAndUserAcrossScopes(t *testing.T) {
 	// deduplication" section). Both deliveries carry the exact same body.
 	var logs bytes.Buffer
 	s, r := &fakeSender{}, &fakeRemover{}
-	d := newDispatcher(s, r, newLogger(&logs))
+	d := newDispatcher(t, s, r, newLogger(&logs))
 
 	body := loadReminderFiredFixture(t)
 	if err := d.Dispatch(target(1), body); err != nil {
@@ -258,16 +262,95 @@ func TestDispatchDedupesSameTaskAndUserAcrossScopes(t *testing.T) {
 	}
 }
 
+func TestDispatchDoesNotDedupeOrdinaryEventsOnSameTask(t *testing.T) {
+	// task.comment.created (and every other project event) is not a
+	// notify.IsUserDirected event, so it is never subject to this dedup:
+	// its TaskID alone cannot tell two different comments on the same task
+	// apart, and deduping it would drop the second, genuinely different
+	// comment instead of a true duplicate.
+	var logs bytes.Buffer
+	s, r := &fakeSender{}, &fakeRemover{}
+	d := newDispatcher(t, s, r, newLogger(&logs))
+
+	body, err := os.ReadFile("../webhook/testdata/task_comment_created.json")
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+
+	if err := d.Dispatch(target(2), body); err != nil {
+		t.Fatalf("first Dispatch: %v", err)
+	}
+	if err := d.Dispatch(target(2), body); err != nil {
+		t.Fatalf("second Dispatch: %v", err)
+	}
+	if len(s.tokens) != 2 {
+		t.Fatalf("sent %d pushes, want both comment events pushed, not deduped", len(s.tokens))
+	}
+}
+
+func TestDispatchAllowsRetryAfterAFailedSend(t *testing.T) {
+	// If Vikunja's own retry redelivers a reminder after the first attempt
+	// failed (a transient APNs error, for example), that retry must still go
+	// out: a failed send must not be remembered as a duplicate the way a
+	// successful one is.
+	var logs bytes.Buffer
+	s := &fakeSender{err: &apns.StatusError{Code: 500, Reason: "InternalServerError"}}
+	d := newDispatcher(t, s, &fakeRemover{}, newLogger(&logs))
+
+	body := loadReminderFiredFixture(t)
+	if err := d.Dispatch(target(1), body); err == nil {
+		t.Fatal("first Dispatch returned nil for a rejected push")
+	}
+	if len(s.tokens) != 1 {
+		t.Fatalf("sent %d pushes on the first attempt, want 1", len(s.tokens))
+	}
+
+	s.err = nil
+	if err := d.Dispatch(target(1), body); err != nil {
+		t.Fatalf("retry after the failed send: %v", err)
+	}
+	if len(s.tokens) != 2 {
+		t.Fatalf("sent %d pushes after the retry, want the retry to go out, not be deduped", len(s.tokens))
+	}
+}
+
+// withUserID returns a copy of a recorded delivery fixture with data.user.id
+// replaced, so a test can exercise a second user without hand-writing a
+// delivery body (AGENTS.md requires recorded fixtures, not minimal
+// hand-written payloads).
+func withUserID(t *testing.T, body []byte, userID int64) []byte {
+	t.Helper()
+	var parsed map[string]any
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		t.Fatalf("decode fixture: %v", err)
+	}
+	data, ok := parsed["data"].(map[string]any)
+	if !ok {
+		t.Fatal("fixture has no data object")
+	}
+	user, ok := data["user"].(map[string]any)
+	if !ok {
+		t.Fatal("fixture has no data.user object")
+	}
+	user["id"] = userID
+
+	out, err := json.Marshal(parsed)
+	if err != nil {
+		t.Fatalf("encode fixture: %v", err)
+	}
+	return out
+}
+
 func TestDispatchDoesNotDedupeDifferentUsersOnSameTask(t *testing.T) {
 	// A project-level webhook can legitimately deliver two different
 	// people's reminders on the same task (see the WebhookListener.Handle
 	// doc this is tested against upstream). Only the user field differs.
 	var logs bytes.Buffer
 	s, r := &fakeSender{}, &fakeRemover{}
-	d := newDispatcher(s, r, newLogger(&logs))
+	d := newDispatcher(t, s, r, newLogger(&logs))
 
-	bodyForUser1 := []byte(`{"event_name":"task.reminder.fired","data":{"task":{"id":254,"title":"Example task"},"project":{"id":1,"title":"Inbox"},"user":{"id":1}}}`)
-	bodyForUser2 := []byte(`{"event_name":"task.reminder.fired","data":{"task":{"id":254,"title":"Example task"},"project":{"id":1,"title":"Inbox"},"user":{"id":2}}}`)
+	bodyForUser1 := loadReminderFiredFixture(t)
+	bodyForUser2 := withUserID(t, bodyForUser1, 2)
 
 	if err := d.Dispatch(target(1), bodyForUser1); err != nil {
 		t.Fatalf("Dispatch for user 1: %v", err)
@@ -283,7 +366,9 @@ func TestDispatchDoesNotDedupeDifferentUsersOnSameTask(t *testing.T) {
 func TestDispatchDedupesAfterWindowStillSuppressesOnlyWithinIt(t *testing.T) {
 	var logs bytes.Buffer
 	s, r := &fakeSender{}, &fakeRemover{}
-	d := NewDispatcher(s, r, newLogger(&logs), dedup.New(20*time.Millisecond))
+	cache := dedup.New(20 * time.Millisecond)
+	t.Cleanup(cache.Close)
+	d := NewDispatcher(s, r, newLogger(&logs), cache)
 
 	body := loadReminderFiredFixture(t)
 	if err := d.Dispatch(target(1), body); err != nil {
@@ -304,7 +389,7 @@ func TestDispatchDedupesAfterWindowStillSuppressesOnlyWithinIt(t *testing.T) {
 func TestDispatchDedupesOverdueDigestPerTask(t *testing.T) {
 	var logs bytes.Buffer
 	s, r := &fakeSender{}, &fakeRemover{}
-	d := newDispatcher(s, r, newLogger(&logs))
+	d := newDispatcher(t, s, r, newLogger(&logs))
 
 	body := loadOverdueDigestFixture(t)
 	if err := d.Dispatch(target(1), body); err != nil {
@@ -324,7 +409,7 @@ func TestDispatchDedupesOverdueDigestPerTask(t *testing.T) {
 
 func TestDispatchRejectsMalformedBody(t *testing.T) {
 	var logs bytes.Buffer
-	d := newDispatcher(&fakeSender{}, &fakeRemover{}, newLogger(&logs))
+	d := newDispatcher(t, &fakeSender{}, &fakeRemover{}, newLogger(&logs))
 
 	if err := d.Dispatch(target(2), []byte(`{`)); err == nil {
 		t.Fatal("Dispatch accepted a malformed body")
@@ -334,7 +419,7 @@ func TestDispatchRejectsMalformedBody(t *testing.T) {
 func TestDispatchSetsReminderFiredCategory(t *testing.T) {
 	var logs bytes.Buffer
 	s, r := &fakeSender{}, &fakeRemover{}
-	d := newDispatcher(s, r, newLogger(&logs))
+	d := newDispatcher(t, s, r, newLogger(&logs))
 
 	if err := d.Dispatch(target(1), loadReminderFiredFixture(t)); err != nil {
 		t.Fatalf("Dispatch: %v", err)
@@ -359,7 +444,7 @@ func TestDispatchSetsReminderFiredCategory(t *testing.T) {
 func TestDispatchFansOutOverdueDigest(t *testing.T) {
 	var logs bytes.Buffer
 	s, r := &fakeSender{}, &fakeRemover{}
-	d := newDispatcher(s, r, newLogger(&logs))
+	d := newDispatcher(t, s, r, newLogger(&logs))
 
 	if err := d.Dispatch(target(1), loadOverdueDigestFixture(t)); err != nil {
 		t.Fatalf("Dispatch: %v", err)
@@ -422,7 +507,7 @@ func TestDispatchOverdueDigestStopsOnUnregistered(t *testing.T) {
 	var logs bytes.Buffer
 	s := &fakeSender{err: apns.ErrUnregistered}
 	r := &fakeRemover{}
-	d := newDispatcher(s, r, newLogger(&logs))
+	d := newDispatcher(t, s, r, newLogger(&logs))
 
 	if err := d.Dispatch(target(1), loadOverdueDigestFixture(t)); err != nil {
 		t.Fatalf("Dispatch on 410 = %v, want nil so the delivery is not retried", err)
@@ -439,7 +524,7 @@ func TestDispatchOverdueDigestStopsOnRejectedPush(t *testing.T) {
 	var logs bytes.Buffer
 	s := &fakeSender{err: &apns.StatusError{Code: 400, Reason: "BadTopic"}}
 	r := &fakeRemover{}
-	d := newDispatcher(s, r, newLogger(&logs))
+	d := newDispatcher(t, s, r, newLogger(&logs))
 
 	if err := d.Dispatch(target(1), loadOverdueDigestFixture(t)); err == nil {
 		t.Fatal("Dispatch returned nil for a rejected push, so the handler would answer 200")
@@ -452,7 +537,7 @@ func TestDispatchOverdueDigestStopsOnRejectedPush(t *testing.T) {
 func TestDispatchOverdueDigestDropsEmptyDigest(t *testing.T) {
 	var logs bytes.Buffer
 	s := &fakeSender{}
-	d := newDispatcher(s, &fakeRemover{}, newLogger(&logs))
+	d := newDispatcher(t, s, &fakeRemover{}, newLogger(&logs))
 
 	body := []byte(`{"event_name":"tasks.overdue","data":{"tasks":[],"projects":{}}}`)
 	if err := d.Dispatch(target(1), body); err != nil {

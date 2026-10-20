@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Seergs/viku-apn-relay/internal/apns"
+	"github.com/Seergs/viku-apn-relay/internal/dedup"
 	"github.com/Seergs/viku-apn-relay/internal/push"
 	"github.com/Seergs/viku-apn-relay/internal/registration"
 	"github.com/Seergs/viku-apn-relay/internal/server"
@@ -21,6 +22,12 @@ const (
 	shutdownTimeout = 10 * time.Second
 	defaultBaseURL  = "https://relay.viku.dev"
 	defaultDBPath   = "relay.db"
+	// dedupWindow is how long a registration/event/task/user combination is
+	// remembered to collapse a duplicate delivery (see internal/dedup and
+	// docs/OPERATIONS.md's "Delivery deduplication" section). Vikunja
+	// dispatches both matching webhooks from the same event in the same
+	// request, so a few seconds of margin is already generous.
+	dedupWindow = 30 * time.Second
 )
 
 func main() {
@@ -46,7 +53,9 @@ func run(logger *slog.Logger) error {
 	defer func() { _ = store.Close() }()
 
 	api := registration.NewAPI(store, envOr("PUBLIC_BASE_URL", defaultBaseURL))
-	dispatcher := push.NewDispatcher(apnsClient, store, logger)
+	dedupeCache := dedup.New(dedupWindow)
+	defer dedupeCache.Close()
+	dispatcher := push.NewDispatcher(apnsClient, store, logger, dedupeCache)
 	webhooks := webhook.NewHandler(store, dispatcher)
 
 	srv := &http.Server{

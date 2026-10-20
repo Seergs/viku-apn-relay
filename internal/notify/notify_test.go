@@ -282,7 +282,10 @@ func TestMapTaskReminderFired(t *testing.T) {
 		t.Fatalf("read fixture: %v", err)
 	}
 
-	want := Notification{Event: TaskReminderFired, TaskID: 254, TaskTitle: "Example task", ProjectID: 1, ProjectName: "Inbox"}
+	// The fixture's data.user (the reminder's target) is id 1 — EventUserID
+	// comes from that field, not from the registered userID argument below,
+	// so it stays 1 regardless of which device's registration is passed in.
+	want := Notification{Event: TaskReminderFired, TaskID: 254, TaskTitle: "Example task", ProjectID: 1, ProjectName: "Inbox", EventUserID: 1}
 	for _, userID := range []int64{1, 2} {
 		// User-level event: no doer, and never dropped by the self-action rule.
 		n, ok, err := Map(body, userID)
@@ -292,6 +295,27 @@ func TestMapTaskReminderFired(t *testing.T) {
 		if n != want {
 			t.Fatalf("Map for user %d = %+v, want %+v", userID, n, want)
 		}
+	}
+}
+
+func TestDigestUserID(t *testing.T) {
+	body, err := os.ReadFile("../webhook/testdata/tasks_overdue.json")
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+
+	got, err := DigestUserID(body)
+	if err != nil {
+		t.Fatalf("DigestUserID: %v", err)
+	}
+	if got != 1 {
+		t.Fatalf("DigestUserID = %d, want 1", got)
+	}
+}
+
+func TestDigestUserIDRejectsMalformedJSON(t *testing.T) {
+	if _, err := DigestUserID([]byte(`{`)); err == nil {
+		t.Fatal("DigestUserID accepted malformed JSON")
 	}
 }
 

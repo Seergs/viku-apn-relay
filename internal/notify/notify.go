@@ -78,6 +78,15 @@ type Notification struct {
 	AssigneeName   string
 	TeamName       string
 	CommentExcerpt string
+	// EventUserID is the id of the user a userLevel event is directed at
+	// (from the payload's own data.user field), zero for every other event.
+	// It is NOT the registered device's own Vikunja user id (see Map's
+	// userID parameter) — it is what lets push.Dispatcher's dedup tell apart
+	// "my own reminder, delivered twice" (same EventUserID, a true
+	// duplicate when a project-level and a user-level webhook both match)
+	// from "a project-mate's reminder" (a different EventUserID, not a
+	// duplicate) when both scopes are subscribed to the same project.
+	EventUserID int64
 }
 
 // delivery holds only the fields the relay reads. Everything else in the body
@@ -106,6 +115,9 @@ type delivery struct {
 		Comment *struct {
 			Comment string `json:"comment"`
 		} `json:"comment"`
+		User *struct {
+			ID int64 `json:"id"`
+		} `json:"user"`
 		Tasks []struct {
 			ID        int64  `json:"id"`
 			Title     string `json:"title"`
@@ -187,6 +199,9 @@ func Map(body []byte, userID int64) (n Notification, ok bool, err error) {
 	if d.Data.Comment != nil {
 		n.CommentExcerpt = plainTextExcerpt(d.Data.Comment.Comment)
 	}
+	if userLevel[d.EventName] && d.Data.User != nil {
+		n.EventUserID = d.Data.User.ID
+	}
 	return n, true, nil
 }
 
@@ -201,6 +216,22 @@ func IsOverdueDigest(body []byte) (bool, error) {
 		return false, fmt.Errorf("decode delivery: %w", err)
 	}
 	return d.EventName == TasksOverdue, nil
+}
+
+// DigestUserID returns the id of the user a tasks.overdue digest is
+// directed at. Every task in one digest shares the same user (Vikunja
+// dispatches one TasksOverdueEvent per user with all of that user's overdue
+// tasks attached), so this is read once per delivery rather than per task —
+// see push.Dispatcher's per-task dedup key in dispatchOverdueDigest.
+func DigestUserID(body []byte) (int64, error) {
+	var d delivery
+	if err := json.Unmarshal(body, &d); err != nil {
+		return 0, fmt.Errorf("decode delivery: %w", err)
+	}
+	if d.Data.User == nil {
+		return 0, nil
+	}
+	return d.Data.User.ID, nil
 }
 
 // MapOverdueDigest parses a verified tasks.overdue delivery body into one

@@ -22,9 +22,12 @@ The client side lives in the `vikunja-ios` repo.
 - **Drop self-caused events.** Project-level events where the actor is the registered user
   are never pushed. User-level events (`task.overdue`, `task.reminder.fired`,
   `tasks.overdue`) are not dropped by this rule.
-- **`tasks.overdue` fans out, it does not map to one notification.** It is a daily digest of
-  several tasks, so `push.Dispatch` sends one push per task (see `notify.MapOverdueDigest`
-  and `push.PayloadForTask`) instead of going through `notify.Map`.
+- **`tasks.overdue` fans out, it does not map to one notification, unless the registration
+  opted into grouping.** It is a daily digest of several tasks, so by default `push.Dispatch`
+  sends one push per task (see `notify.MapOverdueDigest` and `push.PayloadForTask`) instead of
+  going through `notify.Map`. A registration with `group_overdue_notifications` set (via
+  `PATCH /v1/registrations/{id}/preferences`) gets one combined push instead
+  (`push.PayloadForOverdueDigest`) — this is the one opt-in exception to the rule.
 - **Unregister on APNs 410.** Delete the device registration when APNs reports it unregistered.
 
 ## Testing

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/Seergs/viku-apn-relay/internal/apns"
@@ -15,6 +16,38 @@ import (
 	"github.com/Seergs/viku-apn-relay/internal/notify"
 	"github.com/Seergs/viku-apn-relay/internal/webhook"
 )
+
+// overdueDigestBulletLimit caps how many tasks a grouped overdue push lists
+// by name before falling back to a "+N more" line. The digest itself can
+// carry far more tasks than fit in a push's alert body.
+const overdueDigestBulletLimit = 5
+
+// overdueDigestTitleLimit and overdueDigestProjectNameLimit cap each
+// bullet's two user-controlled strings, in runes. APNs rejects an alert
+// payload over 4096 bytes outright, with no partial delivery: five
+// untruncated bullets of attacker- or just verbose-user-controlled text (a
+// multi-byte title, e.g. CJK, costs up to 4 bytes per rune) could alone blow
+// past that budget even though every one of this digest's individual
+// per-task pushes (see PayloadForTask) comfortably fits it. These limits,
+// combined with overdueDigestBulletLimit, keep the worst case (5 bullets,
+// every rune 4 bytes) safely under 2.5KB, leaving headroom for the rest of
+// the JSON.
+const (
+	overdueDigestTitleLimit       = 60
+	overdueDigestProjectNameLimit = 40
+)
+
+// truncateRunes shortens s to at most limit runes, appending "…" when it
+// does. Byte-slicing here instead would risk cutting a multi-byte rune in
+// half; mirrors notify.plainTextExcerpt's same reasoning for the same
+// reason (both deal in user-authored Vikunja text).
+func truncateRunes(s string, limit int) string {
+	runes := []rune(s)
+	if len(runes) <= limit {
+		return s
+	}
+	return string(runes[:limit]) + "…"
+}
 
 const sendTimeout = 10 * time.Second
 
@@ -122,17 +155,8 @@ func (d *Dispatcher) Dispatch(t webhook.Target, body []byte) (err error) {
 	return err
 }
 
-// dispatchOverdueDigest sends one push per task in a tasks.overdue delivery,
-// sharing each task's project thread-id so iOS stacks them together instead
-// of showing one row per task. It stops at the first task whose send fails:
-// on 410 Unregistered that means the registration is already gone, and on
-// any other error Vikunja will retry the whole digest.
-//
-// Every task here is always a real, distinct task (there is no placeholder
-// zero TaskID the way an ordinary project event can have), and the event is
-// always tasks.overdue, so this path dedupes every task unconditionally;
-// there is no notify.IsUserDirected check to make, unlike Dispatch's single-
-// event path, which handles every event type.
+// dispatchOverdueDigest sends either one combined push or one push per task
+// for a tasks.overdue delivery, depending on t.GroupOverdueNotifications.
 func (d *Dispatcher) dispatchOverdueDigest(t webhook.Target, body []byte) error {
 	tasks, err := notify.MapOverdueDigest(body)
 	if err != nil {
@@ -148,6 +172,48 @@ func (d *Dispatcher) dispatchOverdueDigest(t webhook.Target, body []byte) error 
 		return err
 	}
 
+	if t.GroupOverdueNotifications {
+		return d.sendOverdueDigestGrouped(t, tasks, userID)
+	}
+	return d.sendOverdueDigestFannedOut(t, tasks, userID)
+}
+
+// sendOverdueDigestGrouped sends a single push summarizing every task in the
+// digest. There is no per-task TaskID to key the dedup claim on, so it uses
+// the sentinel 0 (a real overdue task never has TaskID 0, see
+// notify.MapOverdueDigest) to dedupe the whole digest as one unit instead.
+func (d *Dispatcher) sendOverdueDigestGrouped(t webhook.Target, tasks []notify.OverdueTask, userID int64) error {
+	proceed, release := d.dedupe.Claim(dedupKey(t.ID, notify.TasksOverdue, 0, userID))
+	if !proceed {
+		d.log.Info("delivery not pushed", "outcome", "deduped")
+		return nil
+	}
+
+	payload, collapseID, err := PayloadForOverdueDigest(tasks, t.ID, t.AccountKey)
+	if err != nil {
+		release(false)
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), sendTimeout)
+	defer cancel()
+	_, err = d.send(ctx, t, payload, collapseID)
+	release(err == nil)
+	return err
+}
+
+// sendOverdueDigestFannedOut sends one push per task, sharing each task's
+// project thread-id so iOS stacks them together instead of showing one row
+// per task. It stops at the first task whose send fails: on 410 Unregistered
+// that means the registration is already gone, and on any other error
+// Vikunja will retry the whole digest.
+//
+// Every task here is always a real, distinct task (there is no placeholder
+// zero TaskID the way an ordinary project event can have), and the event is
+// always tasks.overdue, so this path dedupes every task unconditionally;
+// there is no notify.IsUserDirected check to make, unlike Dispatch's single-
+// event path, which handles every event type.
+func (d *Dispatcher) sendOverdueDigestFannedOut(t webhook.Target, tasks []notify.OverdueTask, userID int64) error {
 	ctx, cancel := context.WithTimeout(context.Background(), sendTimeout)
 	defer cancel()
 
@@ -323,6 +389,52 @@ func PayloadForTask(t notify.OverdueTask, registrationID, accountKey string) (pa
 		Event:      notify.TasksOverdue,
 		TaskID:     t.TaskID,
 		ProjectID:  t.ProjectID,
+		AccountKey: accountKey,
+	})
+	return payload, collapseID, err
+}
+
+// PayloadForOverdueDigest builds the APNs JSON body for a whole tasks.overdue
+// digest as one combined push, plus its apns-collapse-id. Unlike Payload and
+// PayloadForTask, there is no single task or project this push is about, so
+// it carries no thread-id, category, task_id, or project_id: tapping it only
+// opens the app, it does not deep-link anywhere, which is also why no
+// category (and therefore no per-task actions) is set.
+func PayloadForOverdueDigest(tasks []notify.OverdueTask, registrationID, accountKey string) (payload []byte, collapseID string, err error) {
+	title := "1 task is overdue"
+	if len(tasks) != 1 {
+		title = fmt.Sprintf("%d tasks are overdue", len(tasks))
+	}
+
+	shown := tasks
+	if len(shown) > overdueDigestBulletLimit {
+		shown = shown[:overdueDigestBulletLimit]
+	}
+	bullets := make([]string, 0, len(shown)+1)
+	for _, task := range shown {
+		bullet := fmt.Sprintf("• %q", truncateRunes(task.TaskTitle, overdueDigestTitleLimit))
+		if task.ProjectName != "" {
+			bullet += fmt.Sprintf(" (%s)", truncateRunes(task.ProjectName, overdueDigestProjectNameLimit))
+		}
+		bullets = append(bullets, bullet)
+	}
+	if remaining := len(tasks) - len(shown); remaining > 0 {
+		bullets = append(bullets, fmt.Sprintf("+%d more", remaining))
+	}
+
+	collapseID = fmt.Sprintf("%s-overdue-digest", registrationID)
+
+	payload, err = json.Marshal(struct {
+		APS struct {
+			Alert alert `json:"alert"`
+		} `json:"aps"`
+		Event      string `json:"event"`
+		AccountKey string `json:"account_key,omitempty"`
+	}{
+		APS: struct {
+			Alert alert `json:"alert"`
+		}{Alert: alert{Title: title, Body: strings.Join(bullets, "\n")}},
+		Event:      notify.TasksOverdue,
 		AccountKey: accountKey,
 	})
 	return payload, collapseID, err

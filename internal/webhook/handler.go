@@ -18,6 +18,10 @@ type Target struct {
 	VikunjaUserID int64
 	APNsToken     string
 	AccountKey    string
+	// GroupOverdueNotifications, when true, tells push.Dispatch to send one
+	// combined push for a tasks.overdue digest instead of fanning it out
+	// into one push per task.
+	GroupOverdueNotifications bool
 }
 
 // Registrations maps an opaque registration id to its delivery target.

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"strings"
@@ -531,6 +532,165 @@ func TestDispatchOverdueDigestStopsOnRejectedPush(t *testing.T) {
 	}
 	if len(s.tokens) != 1 {
 		t.Fatalf("sent %d pushes, want the loop to stop after the first rejection", len(s.tokens))
+	}
+}
+
+func TestDispatchSendsSingleGroupedPushForOverdueDigest(t *testing.T) {
+	var logs bytes.Buffer
+	s, r := &fakeSender{}, &fakeRemover{}
+	d := newDispatcher(t, s, r, newLogger(&logs))
+
+	grouped := target(1)
+	grouped.GroupOverdueNotifications = true
+
+	if err := d.Dispatch(grouped, loadOverdueDigestFixture(t)); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	if len(s.tokens) != 1 {
+		t.Fatalf("sent %d pushes, want one combined push for the whole digest", len(s.tokens))
+	}
+
+	var got struct {
+		APS struct {
+			Alert struct {
+				Title string `json:"title"`
+				Body  string `json:"body"`
+			} `json:"alert"`
+			ThreadID string `json:"thread-id"`
+			Category string `json:"category"`
+		} `json:"aps"`
+		TaskID    int64 `json:"task_id"`
+		ProjectID int64 `json:"project_id"`
+	}
+	if err := json.Unmarshal(s.payloads[0], &got); err != nil {
+		t.Fatalf("payload is not JSON: %v", err)
+	}
+	// The fixture has 4 tasks: "Example task 1" (Example Project), "Example
+	// task 2" (Inbox), "Example task 3" (Example Project), "Example task 4"
+	// (Example Project).
+	if got.APS.Alert.Title != "4 tasks are overdue" {
+		t.Fatalf("title = %q", got.APS.Alert.Title)
+	}
+	wantBody := "• \"Example task 1\" (Example Project)\n" +
+		"• \"Example task 2\" (Inbox)\n" +
+		"• \"Example task 3\" (Example Project)\n" +
+		"• \"Example task 4\" (Example Project)"
+	if got.APS.Alert.Body != wantBody {
+		t.Fatalf("body = %q, want %q", got.APS.Alert.Body, wantBody)
+	}
+	if got.APS.ThreadID != "" {
+		t.Fatalf("thread-id = %q, want none: a combined digest is not about one project", got.APS.ThreadID)
+	}
+	if got.APS.Category != "" {
+		t.Fatalf("category = %q, want none: tapping a combined digest only opens the app", got.APS.Category)
+	}
+	if got.TaskID != 0 || got.ProjectID != 0 {
+		t.Fatalf("task_id/project_id = %d/%d, want both omitted: a combined digest is not about one task", got.TaskID, got.ProjectID)
+	}
+	if s.collapseIDs[0] != "reg-1-overdue-digest" {
+		t.Fatalf("collapse-id = %q, want it namespaced by the registration id", s.collapseIDs[0])
+	}
+}
+
+func TestDispatchGroupedOverdueDigestDedupesAsOneUnit(t *testing.T) {
+	var logs bytes.Buffer
+	s, r := &fakeSender{}, &fakeRemover{}
+	d := newDispatcher(t, s, r, newLogger(&logs))
+
+	grouped := target(1)
+	grouped.GroupOverdueNotifications = true
+
+	body := loadOverdueDigestFixture(t)
+	if err := d.Dispatch(grouped, body); err != nil {
+		t.Fatalf("first Dispatch: %v", err)
+	}
+	if err := d.Dispatch(grouped, body); err != nil {
+		t.Fatalf("second Dispatch: %v", err)
+	}
+	if len(s.tokens) != 1 {
+		t.Fatalf("sent %d pushes, want the repeated digest fully deduped", len(s.tokens))
+	}
+}
+
+func TestPayloadForOverdueDigestCapsBulletsAndCountsTheRest(t *testing.T) {
+	tasks := make([]notify.OverdueTask, 0, 7)
+	for i := 1; i <= 7; i++ {
+		tasks = append(tasks, notify.OverdueTask{TaskID: int64(i), TaskTitle: fmt.Sprintf("Task %d", i)})
+	}
+
+	p, _, err := PayloadForOverdueDigest(tasks, "reg-1", "account-1")
+	if err != nil {
+		t.Fatalf("PayloadForOverdueDigest: %v", err)
+	}
+
+	var got struct {
+		APS struct {
+			Alert struct {
+				Title string `json:"title"`
+				Body  string `json:"body"`
+			} `json:"alert"`
+		} `json:"aps"`
+	}
+	if err := json.Unmarshal(p, &got); err != nil {
+		t.Fatalf("payload is not JSON: %v", err)
+	}
+	if got.APS.Alert.Title != "7 tasks are overdue" {
+		t.Fatalf("title = %q", got.APS.Alert.Title)
+	}
+	lines := strings.Split(got.APS.Alert.Body, "\n")
+	if len(lines) != overdueDigestBulletLimit+1 {
+		t.Fatalf("body has %d lines, want %d bullets plus one \"+N more\" line", len(lines), overdueDigestBulletLimit+1)
+	}
+	if lines[len(lines)-1] != "+2 more" {
+		t.Fatalf("last line = %q, want \"+2 more\"", lines[len(lines)-1])
+	}
+}
+
+func TestPayloadForOverdueDigestSingularTitle(t *testing.T) {
+	p, _, err := PayloadForOverdueDigest([]notify.OverdueTask{{TaskID: 1, TaskTitle: "Example task"}}, "reg-1", "account-1")
+	if err != nil {
+		t.Fatalf("PayloadForOverdueDigest: %v", err)
+	}
+	if !strings.Contains(string(p), `"title":"1 task is overdue"`) {
+		t.Fatalf("payload = %s, want singular title", p)
+	}
+}
+
+func TestPayloadForOverdueDigestTruncatesLongMultibyteNamesToStayUnderAPNsLimit(t *testing.T) {
+	// 4-byte-per-rune text (outside the Basic Multilingual Plane, so each
+	// rune costs the most bytes UTF-8 allows) at a length that would, left
+	// untruncated, blow well past APNs's 4096-byte payload limit on its own.
+	longTitle := strings.Repeat("𝄞", 200)
+	longProject := strings.Repeat("𝄞", 100)
+	tasks := make([]notify.OverdueTask, 0, overdueDigestBulletLimit)
+	for i := 0; i < overdueDigestBulletLimit; i++ {
+		tasks = append(tasks, notify.OverdueTask{
+			TaskID: int64(i + 1), TaskTitle: longTitle, ProjectID: 1, ProjectName: longProject,
+		})
+	}
+
+	p, _, err := PayloadForOverdueDigest(tasks, "reg-1", "account-1")
+	if err != nil {
+		t.Fatalf("PayloadForOverdueDigest: %v", err)
+	}
+
+	// APNs's own documented limit for a standard (non-VoIP) payload.
+	const apnsPayloadLimit = 4096
+	if len(p) >= apnsPayloadLimit {
+		t.Fatalf("payload is %d bytes, want it safely under APNs's %d-byte limit", len(p), apnsPayloadLimit)
+	}
+}
+
+func TestPayloadForOverdueDigestOmitsProjectParensWhenEmpty(t *testing.T) {
+	p, collapseID, err := PayloadForOverdueDigest([]notify.OverdueTask{{TaskID: 1, TaskTitle: "Example task"}}, "reg-1", "account-1")
+	if err != nil {
+		t.Fatalf("PayloadForOverdueDigest: %v", err)
+	}
+	if !strings.Contains(string(p), `"body":"• \"Example task\""`) {
+		t.Fatalf("payload = %s, want no empty parens when ProjectName is empty", p)
+	}
+	if collapseID != "reg-1-overdue-digest" {
+		t.Fatalf("collapse-id = %q, want reg-1-overdue-digest", collapseID)
 	}
 }
 

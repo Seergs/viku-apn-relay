@@ -102,8 +102,12 @@ func (a *API) unregister(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// GroupOverdueNotifications is a pointer so a missing (or explicit null)
+// field is distinguishable from an explicit false — Go's bool zero value
+// would otherwise silently turn grouping off for a client that sends an
+// empty or malformed body, with no error to catch it.
 type updatePreferencesRequest struct {
-	GroupOverdueNotifications bool `json:"group_overdue_notifications"`
+	GroupOverdueNotifications *bool `json:"group_overdue_notifications"`
 }
 
 // updatePreferences sets the registration's preferences, authorized by the
@@ -115,8 +119,12 @@ func (a *API) updatePreferences(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
+	if req.GroupOverdueNotifications == nil {
+		http.Error(w, "group_overdue_notifications is required", http.StatusBadRequest)
+		return
+	}
 
-	err := a.store.SetPreferences(r.PathValue("id"), bearer(r), req.GroupOverdueNotifications)
+	err := a.store.SetPreferences(r.PathValue("id"), bearer(r), *req.GroupOverdueNotifications)
 	if errors.Is(err, ErrUnauthorized) {
 		w.WriteHeader(http.StatusUnauthorized)
 		return

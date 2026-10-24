@@ -223,6 +223,29 @@ func TestUpdatePreferencesRejectsMalformedBody(t *testing.T) {
 	}
 }
 
+// TestUpdatePreferencesRejectsOmittedOrNullField guards against a bool zero
+// value silently turning grouping off: an empty body or an explicit null
+// must be rejected as 400, not quietly treated as false.
+func TestUpdatePreferencesRejectsOmittedOrNullField(t *testing.T) {
+	mux, store := newTestAPI(t)
+	resp := register(t, mux, registerBody)
+	if err := store.SetPreferences(resp.ID, resp.ManagementToken, true); err != nil {
+		t.Fatalf("SetPreferences: %v", err)
+	}
+
+	for _, body := range []string{`{}`, `{"group_overdue_notifications":null}`} {
+		rec := do(mux, http.MethodPatch, "/v1/registrations/"+resp.ID+"/preferences", body, resp.ManagementToken)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("body %s: status = %d, want 400", body, rec.Code)
+		}
+	}
+
+	target, _ := store.Lookup(resp.ID)
+	if !target.GroupOverdueNotifications {
+		t.Fatal("a rejected PATCH must not have turned grouping off")
+	}
+}
+
 func TestRegisterIsRateLimitedPerIP(t *testing.T) {
 	mux, store := newTestAPI(t)
 

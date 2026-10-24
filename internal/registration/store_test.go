@@ -242,6 +242,92 @@ func TestRegisterRejectsInvalidInput(t *testing.T) {
 	}
 }
 
+func TestLookupDefaultsGroupOverdueNotificationsToFalse(t *testing.T) {
+	s := openTestStore(t)
+	reg, err := s.Register(newInput())
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	target, ok := s.Lookup(reg.ID)
+	if !ok {
+		t.Fatal("Lookup failed")
+	}
+	if target.GroupOverdueNotifications {
+		t.Fatal("GroupOverdueNotifications = true for a registration with no preferences row")
+	}
+}
+
+func TestSetPreferencesIsReflectedByLookup(t *testing.T) {
+	s := openTestStore(t)
+	reg, err := s.Register(newInput())
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	if err := s.SetPreferences(reg.ID, reg.ManagementToken, true); err != nil {
+		t.Fatalf("SetPreferences: %v", err)
+	}
+	target, ok := s.Lookup(reg.ID)
+	if !ok || !target.GroupOverdueNotifications {
+		t.Fatalf("Lookup after SetPreferences(true) = %+v, %v", target, ok)
+	}
+
+	if err := s.SetPreferences(reg.ID, reg.ManagementToken, false); err != nil {
+		t.Fatalf("SetPreferences: %v", err)
+	}
+	target, ok = s.Lookup(reg.ID)
+	if !ok || target.GroupOverdueNotifications {
+		t.Fatalf("Lookup after SetPreferences(false) = %+v, %v", target, ok)
+	}
+}
+
+func TestSetPreferencesRejectsWrongTokenAndUnknownID(t *testing.T) {
+	s := openTestStore(t)
+	reg, err := s.Register(newInput())
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	if err := s.SetPreferences(reg.ID, "wrong-token", true); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("SetPreferences with wrong token = %v, want ErrUnauthorized", err)
+	}
+	if err := s.SetPreferences("unknown-id", reg.ManagementToken, true); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("SetPreferences with unknown id = %v, want ErrUnauthorized", err)
+	}
+	target, _ := s.Lookup(reg.ID)
+	if target.GroupOverdueNotifications {
+		t.Fatal("rejected SetPreferences must not change the preference")
+	}
+}
+
+// TestDeletingRegistrationCascadesItsPreferences exercises the "PRAGMA
+// foreign_keys = ON" set in Open: deleting a registration must take its
+// preferences row with it, with no explicit DELETE FROM preferences in
+// application code.
+func TestDeletingRegistrationCascadesItsPreferences(t *testing.T) {
+	s := openTestStore(t)
+	reg, err := s.Register(newInput())
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	if err := s.SetPreferences(reg.ID, reg.ManagementToken, true); err != nil {
+		t.Fatalf("SetPreferences: %v", err)
+	}
+
+	if err := s.Delete(reg.ID, reg.ManagementToken); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+
+	var n int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM preferences`).Scan(&n); err != nil {
+		t.Fatalf("count preferences: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("preferences rows after deleting the registration = %d, want 0", n)
+	}
+}
+
 func TestOpenIsRepeatable(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "relay.db")
 	first, err := Open(path)

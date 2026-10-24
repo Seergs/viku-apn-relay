@@ -25,6 +25,20 @@ CREATE TABLE IF NOT EXISTS registrations (
 	management_token_hash TEXT    NOT NULL,
 	created_at            INTEGER NOT NULL,
 	updated_at            INTEGER NOT NULL
+);
+
+-- preferences holds per-registration settings that are not part of a
+-- device's identity (unlike registrations), so they live in their own
+-- table instead of adding columns there. A row only exists once a
+-- preference has been explicitly set; a missing row means every
+-- preference is at its default (see Store.Lookup). ON DELETE CASCADE
+-- relies on the "PRAGMA foreign_keys = ON" set via Open's DSN, so a
+-- registration's preferences never outlive the registration itself
+-- without a matching DELETE in application code.
+CREATE TABLE IF NOT EXISTS preferences (
+	registration_id             TEXT    PRIMARY KEY REFERENCES registrations(id) ON DELETE CASCADE,
+	group_overdue_notifications INTEGER NOT NULL DEFAULT 0,
+	updated_at                  INTEGER NOT NULL
 );`
 
 // ErrUnauthorized reports a missing or wrong management token, or an unknown id.
@@ -46,8 +60,12 @@ type Registration struct {
 }
 
 // Open opens or creates the SQLite database at path and applies the schema.
+// foreign_keys is on by default in SQLite only for historical compatibility,
+// so it must be requested explicitly; the DSN query parameter (rather than a
+// PRAGMA issued after Open) applies to every connection the pool opens, not
+// just the one in hand when Open ran.
 func Open(path string) (*Store, error) {
-	db, err := sql.Open("sqlite", path)
+	db, err := sql.Open("sqlite", path+"?_pragma=foreign_keys(1)")
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
 	}
@@ -135,17 +153,40 @@ func (s *Store) Delete(id, managementToken string) error {
 }
 
 // Lookup returns the delivery target for id. It implements
-// webhook.Registrations.
+// webhook.Registrations. The LEFT JOIN means a registration with no
+// preferences row (the common case) still resolves, with
+// GroupOverdueNotifications defaulting to false.
 func (s *Store) Lookup(id string) (webhook.Target, bool) {
 	var t webhook.Target
+	var groupOverdue sql.NullBool
 	err := s.db.QueryRow(
-		`SELECT webhook_secret, vikunja_user_id, apns_token, account_key FROM registrations WHERE id = ?`, id,
-	).Scan(&t.Secret, &t.VikunjaUserID, &t.APNsToken, &t.AccountKey)
+		`SELECT r.webhook_secret, r.vikunja_user_id, r.apns_token, r.account_key, p.group_overdue_notifications
+		FROM registrations r LEFT JOIN preferences p ON p.registration_id = r.id
+		WHERE r.id = ?`, id,
+	).Scan(&t.Secret, &t.VikunjaUserID, &t.APNsToken, &t.AccountKey, &groupOverdue)
 	if err != nil {
 		return webhook.Target{}, false
 	}
 	t.ID = id
+	t.GroupOverdueNotifications = groupOverdue.Valid && groupOverdue.Bool
 	return t, true
+}
+
+// SetPreferences updates the preferences row for id after checking the
+// management token, creating it if this is the first preference ever set
+// for that registration.
+func (s *Store) SetPreferences(id, managementToken string, groupOverdueNotifications bool) error {
+	if err := s.authorize(id, managementToken); err != nil {
+		return err
+	}
+	_, err := s.db.Exec(`INSERT INTO preferences (registration_id, group_overdue_notifications, updated_at)
+		VALUES (?, ?, ?)
+		ON CONFLICT(registration_id) DO UPDATE SET group_overdue_notifications = excluded.group_overdue_notifications, updated_at = excluded.updated_at`,
+		id, groupOverdueNotifications, s.now().Unix())
+	if err != nil {
+		return fmt.Errorf("write preferences: %w", err)
+	}
+	return nil
 }
 
 // Remove deletes the registration without a management token. Only the push

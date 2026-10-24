@@ -45,6 +45,7 @@ func NewAPI(store *Store, baseURL string) *API {
 func (a *API) Routes(mux *http.ServeMux) {
 	mux.Handle("POST /v1/registrations", a.registerLim.Middleware(http.HandlerFunc(a.register)))
 	mux.HandleFunc("DELETE /v1/registrations/{id}", a.unregister)
+	mux.HandleFunc("PATCH /v1/registrations/{id}/preferences", a.updatePreferences)
 }
 
 type registerRequest struct {
@@ -90,6 +91,32 @@ func (a *API) register(w http.ResponseWriter, r *http.Request) {
 // unregister removes the registration. Authorized by the management token.
 func (a *API) unregister(w http.ResponseWriter, r *http.Request) {
 	err := a.store.Delete(r.PathValue("id"), bearer(r))
+	if errors.Is(err, ErrUnauthorized) {
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+	if err != nil {
+		writeInternalOrInvalid(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+type updatePreferencesRequest struct {
+	GroupOverdueNotifications bool `json:"group_overdue_notifications"`
+}
+
+// updatePreferences sets the registration's preferences, authorized by the
+// management token like unregister. Unlike POST /v1/registrations, this is
+// not a device registration: it takes effect immediately and never touches
+// apns_token, webhook_secret, or any other registration identity field.
+func (a *API) updatePreferences(w http.ResponseWriter, r *http.Request) {
+	var req updatePreferencesRequest
+	if !decode(w, r, &req) {
+		return
+	}
+
+	err := a.store.SetPreferences(r.PathValue("id"), bearer(r), req.GroupOverdueNotifications)
 	if errors.Is(err, ErrUnauthorized) {
 		w.WriteHeader(http.StatusUnauthorized)
 		return

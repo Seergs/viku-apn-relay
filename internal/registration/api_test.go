@@ -168,6 +168,61 @@ func TestRegisterStoresWebhookSecret(t *testing.T) {
 	}
 }
 
+func TestUpdatePreferencesChangesGroupOverdueImmediately(t *testing.T) {
+	mux, store := newTestAPI(t)
+	resp := register(t, mux, registerBody)
+
+	rec := do(mux, http.MethodPatch, "/v1/registrations/"+resp.ID+"/preferences",
+		`{"group_overdue_notifications":true}`, resp.ManagementToken)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, body = %s, want 204", rec.Code, rec.Body)
+	}
+
+	target, ok := store.Lookup(resp.ID)
+	if !ok || !target.GroupOverdueNotifications {
+		t.Fatalf("Lookup after PATCH = %+v, %v, want GroupOverdueNotifications true", target, ok)
+	}
+}
+
+func TestUpdatePreferencesRequiresValidToken(t *testing.T) {
+	mux, store := newTestAPI(t)
+	resp := register(t, mux, registerBody)
+
+	tests := []struct {
+		name  string
+		id    string
+		token string
+	}{
+		{"no token", resp.ID, ""},
+		{"wrong token", resp.ID, "not-the-token"},
+		{"unknown id", "does-not-exist", resp.ManagementToken},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := do(mux, http.MethodPatch, "/v1/registrations/"+tt.id+"/preferences",
+				`{"group_overdue_notifications":true}`, tt.token)
+			if rec.Code != http.StatusUnauthorized {
+				t.Fatalf("status = %d, want 401", rec.Code)
+			}
+		})
+	}
+
+	target, _ := store.Lookup(resp.ID)
+	if target.GroupOverdueNotifications {
+		t.Fatal("rejected PATCH must not change the preference")
+	}
+}
+
+func TestUpdatePreferencesRejectsMalformedBody(t *testing.T) {
+	mux, _ := newTestAPI(t)
+	resp := register(t, mux, registerBody)
+
+	rec := do(mux, http.MethodPatch, "/v1/registrations/"+resp.ID+"/preferences", `{`, resp.ManagementToken)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+}
+
 func TestRegisterIsRateLimitedPerIP(t *testing.T) {
 	mux, store := newTestAPI(t)
 

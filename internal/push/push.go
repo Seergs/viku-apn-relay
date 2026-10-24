@@ -22,6 +22,33 @@ import (
 // carry far more tasks than fit in a push's alert body.
 const overdueDigestBulletLimit = 5
 
+// overdueDigestTitleLimit and overdueDigestProjectNameLimit cap each
+// bullet's two user-controlled strings, in runes. APNs rejects an alert
+// payload over 4096 bytes outright, with no partial delivery: five
+// untruncated bullets of attacker- or just verbose-user-controlled text (a
+// multi-byte title, e.g. CJK, costs up to 4 bytes per rune) could alone blow
+// past that budget even though every one of this digest's individual
+// per-task pushes (see PayloadForTask) comfortably fits it. These limits,
+// combined with overdueDigestBulletLimit, keep the worst case (5 bullets,
+// every rune 4 bytes) safely under 2.5KB, leaving headroom for the rest of
+// the JSON.
+const (
+	overdueDigestTitleLimit       = 60
+	overdueDigestProjectNameLimit = 40
+)
+
+// truncateRunes shortens s to at most limit runes, appending "…" when it
+// does. Byte-slicing here instead would risk cutting a multi-byte rune in
+// half; mirrors notify.plainTextExcerpt's same reasoning for the same
+// reason (both deal in user-authored Vikunja text).
+func truncateRunes(s string, limit int) string {
+	runes := []rune(s)
+	if len(runes) <= limit {
+		return s
+	}
+	return string(runes[:limit]) + "…"
+}
+
 const sendTimeout = 10 * time.Second
 
 // Category identifiers sent as aps.category, matching the
@@ -385,9 +412,9 @@ func PayloadForOverdueDigest(tasks []notify.OverdueTask, registrationID, account
 	}
 	bullets := make([]string, 0, len(shown)+1)
 	for _, task := range shown {
-		bullet := fmt.Sprintf("• %q", task.TaskTitle)
+		bullet := fmt.Sprintf("• %q", truncateRunes(task.TaskTitle, overdueDigestTitleLimit))
 		if task.ProjectName != "" {
-			bullet += fmt.Sprintf(" (%s)", task.ProjectName)
+			bullet += fmt.Sprintf(" (%s)", truncateRunes(task.ProjectName, overdueDigestProjectNameLimit))
 		}
 		bullets = append(bullets, bullet)
 	}

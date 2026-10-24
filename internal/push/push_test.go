@@ -656,6 +656,31 @@ func TestPayloadForOverdueDigestSingularTitle(t *testing.T) {
 	}
 }
 
+func TestPayloadForOverdueDigestTruncatesLongMultibyteNamesToStayUnderAPNsLimit(t *testing.T) {
+	// 4-byte-per-rune text (outside the Basic Multilingual Plane, so each
+	// rune costs the most bytes UTF-8 allows) at a length that would, left
+	// untruncated, blow well past APNs's 4096-byte payload limit on its own.
+	longTitle := strings.Repeat("𝄞", 200)
+	longProject := strings.Repeat("𝄞", 100)
+	tasks := make([]notify.OverdueTask, 0, overdueDigestBulletLimit)
+	for i := 0; i < overdueDigestBulletLimit; i++ {
+		tasks = append(tasks, notify.OverdueTask{
+			TaskID: int64(i + 1), TaskTitle: longTitle, ProjectID: 1, ProjectName: longProject,
+		})
+	}
+
+	p, _, err := PayloadForOverdueDigest(tasks, "reg-1", "account-1")
+	if err != nil {
+		t.Fatalf("PayloadForOverdueDigest: %v", err)
+	}
+
+	// APNs's own documented limit for a standard (non-VoIP) payload.
+	const apnsPayloadLimit = 4096
+	if len(p) >= apnsPayloadLimit {
+		t.Fatalf("payload is %d bytes, want it safely under APNs's %d-byte limit", len(p), apnsPayloadLimit)
+	}
+}
+
 func TestPayloadForOverdueDigestOmitsProjectParensWhenEmpty(t *testing.T) {
 	p, collapseID, err := PayloadForOverdueDigest([]notify.OverdueTask{{TaskID: 1, TaskTitle: "Example task"}}, "reg-1", "account-1")
 	if err != nil {

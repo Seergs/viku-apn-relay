@@ -203,13 +203,37 @@ The reverse proxy in front of the host already routes both domains to their resp
 
 ### Upgrade / rollback
 
-The tag to run is tracked in Git, not on the server. Open a PR that bumps `RELAY_TAG`:
+The tag to run is tracked in Git, not on the server. Promotions use pull requests:
 
-- in `.doco-cd.yml` to push a build to stg,
-- in `.doco-cd.prd.yml` to promote a tag already validated in stg to prd.
+- **Staging:** after the image workflow publishes an image for a push to `main`, it
+  opens or updates a PR from `chore/promote-stg` to change `RELAY_TAG` in `.doco-cd.yml`.
+  Builds from pull requests and release tags do not promote. Superseded builds are
+  skipped, and deployment-only changes do not build another image.
+- **Production:** run **promote image** from the Actions tab, selecting `main`.
+  It opens or updates a PR from `chore/promote-prd`, copying the staging `RELAY_TAG`
+  on `main` into `.doco-cd.prd.yml`. There is no SHA input. Other branches cannot
+  run the promotion job.
 
 Once that PR merges, the matching doco-cd daemon picks up the change and redeploys. To roll back,
 open the same kind of PR with the previous SHA.
+
+Production promotion copies the staging configuration at workflow execution time.
+This ensures the image was selected for staging, but does not check deployment success
+or prove that testing happened. Before merging a production PR, confirm the exact tag
+was deployed and tested in staging. If staging advances, the production PR keeps its
+selected tag until the production workflow is run again.
+
+#### Promotion token setup
+
+Create a fine-grained personal access token restricted to this repository with
+**Contents: Read and write** and **Pull requests: Read and write** permissions. Store it
+as the repository Actions secret `PROMOTION_TOKEN`. Keep the value out of files and logs,
+and renew it before expiration.
+
+The PAT pushes the promotion branch and creates the PR so its `pull_request` checks
+run automatically. The built-in `GITHUB_TOKEN` remains read-only for promotion; the
+image build retains its existing package publishing permission. Promotion PRs are
+reviewed and merged manually. Each promotion runs `go test ./...` before committing.
 
 Without doco-cd running (e.g. before it's set up on a stack), the same upgrade can be done by hand
 from a checkout of this repo, with `SECRETS_DIR` pointed at that stack's existing directory on the

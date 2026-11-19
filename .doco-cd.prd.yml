@@ -4,6 +4,8 @@
 # `target: prd`. Bump RELAY_TAG here (via PR) only after that same tag has
 # been validated in stg.
 name: viku-apn-relay-prd
+pause: true
+reconciliation: false
 
 working_dir: deploy
 compose_files:

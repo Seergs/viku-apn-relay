@@ -4,15 +4,13 @@
 # `target` set. Bump RELAY_TAG here (via PR) to push a new build to stg;
 # doco-cd picks up the merge and redeploys.
 name: viku-apn-relay-stg
-pause: true
-reconciliation: false
 
 working_dir: deploy
 compose_files:
   - compose.yaml
 
 environment:
-  RELAY_TAG: sha-7b89da0a4c109663cc8190a475b450ce6cacbb02
+  RELAY_TAG: sha-5192cf50de1528effdf707ef81e14780792f6a84
   STACK_NAME: viku-apn-relay-stg
   PUBLIC_BASE_URL: https://relay-stg.viku.dev
   HOST_PORT: "8080"

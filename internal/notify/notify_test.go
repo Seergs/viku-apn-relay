@@ -66,7 +66,7 @@ func TestMapTaskAssigneeCreated(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("Map for another user = ok %v, err %v; want pushed", ok, err)
 	}
-	want := Notification{Event: TaskAssigneeCreated, TaskID: 255, TaskTitle: "Example task", ProjectID: 1, ProjectName: "Inbox", ActorName: "Jane Doe", AssigneeName: "Jane Doe"}
+	want := Notification{Event: TaskAssigneeCreated, TaskID: 255, TaskTitle: "Example task", ProjectID: 1, ProjectName: "Inbox", ActorName: "Jane Doe", AssigneeName: "Jane Doe", AssigneeID: 1}
 	if n != want {
 		t.Fatalf("Map = %+v, want %+v", n, want)
 	}
@@ -266,7 +266,7 @@ func TestMapTaskAssigneeDeleted(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("Map for another user = ok %v, err %v; want pushed", ok, err)
 	}
-	want := Notification{Event: TaskAssigneeDeleted, TaskID: 254, TaskTitle: "Example task", ProjectID: 1, ProjectName: "Inbox", ActorName: "Jane Doe", AssigneeName: "Jane Doe"}
+	want := Notification{Event: TaskAssigneeDeleted, TaskID: 254, TaskTitle: "Example task", ProjectID: 1, ProjectName: "Inbox", ActorName: "Jane Doe", AssigneeName: "Jane Doe", AssigneeID: 1}
 	if n != want {
 		t.Fatalf("Map = %+v, want %+v", n, want)
 	}

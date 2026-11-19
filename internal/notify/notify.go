@@ -89,6 +89,7 @@ type Notification struct {
 	ProjectName    string
 	ActorName      string
 	AssigneeName   string
+	AssigneeID     int64
 	TeamName       string
 	CommentExcerpt string
 	// EventUserID is the id of the user a userLevel event is directed at
@@ -120,6 +121,7 @@ type delivery struct {
 			Title string `json:"title"`
 		} `json:"project"`
 		Assignee *struct {
+			ID   int64  `json:"id"`
 			Name string `json:"name"`
 		} `json:"assignee"`
 		Team *struct {
@@ -204,6 +206,7 @@ func Map(body []byte, userID int64) (n Notification, ok bool, err error) {
 		n.ActorName = d.Data.Doer.Name
 	}
 	if d.Data.Assignee != nil {
+		n.AssigneeID = d.Data.Assignee.ID
 		n.AssigneeName = d.Data.Assignee.Name
 	}
 	if d.Data.Team != nil {

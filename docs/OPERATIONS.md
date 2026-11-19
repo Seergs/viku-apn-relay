@@ -57,7 +57,7 @@ The relay never interprets `account_key`, it only stores it and matches registra
 by it. The app is free to use its own saved-connection id, as long as it is stable across
 calls for the same connection and distinct across different connections.
 
-`vikunja_user_id` is used only to drop self-caused project events. The relay does not verify
+`vikunja_user_id` is used to drop self-caused project events and filter assignments to the registered user. The relay does not verify
 it against Vikunja.
 
 ### `DELETE /v1/registrations/{id}`
@@ -126,6 +126,34 @@ instances and both get pushed: the dedup would silently stop working. Scaling ou
 moved to shared state first: either a dedicated store (e.g. Redis, `SETNX` with a TTL) or a table
 in the existing SQLite database with a `UNIQUE` constraint on the key, so a second insert for the
 same key fails instead of a second push going out.
+
+### `PATCH /v1/registrations/{id}/preferences`
+
+Requires `Authorization: Bearer <management_token>`. Returns 204 on success.
+Preferences apply only to this registration (the app's saved account connection).
+
+```json
+{
+  "group_overdue_notifications": true,
+  "assignment_notifications": "only_me"
+}
+```
+
+Send either field or both. Omitted fields keep their current values. Empty updates,
+unknown fields, null values, incorrect types, and invalid assignment modes return 400.
+Invalid or missing management tokens return 401.
+
+- `group_overdue_notifications`: defaults to false; true combines a `tasks.overdue`
+  digest into one push instead of one push per task.
+- `assignment_notifications`: defaults to `all`; `only_me` sends
+  `task.assignee.created` only when `data.assignee.id` matches the registration's
+  `vikunja_user_id`. Missing assignee IDs are dropped in this mode. Other events,
+  including `task.assignee.deleted`, are unaffected. Self-caused project events
+  are still dropped in both modes.
+
+Preferences persist in the SQLite `preferences` table, keyed by `registration_id`.
+They survive re-registration with the same `account_key` and are deleted with the
+registration.
 
 ### `GET /privacy`
 

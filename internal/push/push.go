@@ -131,6 +131,11 @@ func (d *Dispatcher) Dispatch(t webhook.Target, body []byte) (err error) {
 		d.log.Info("delivery not pushed", "outcome", "dropped")
 		return nil
 	}
+	if n.Event == notify.TaskAssigneeCreated && t.AssignmentNotifications == "only_me" &&
+		(n.AssigneeID <= 0 || n.AssigneeID != t.VikunjaUserID) {
+		d.log.Info("delivery not pushed", "outcome", "assignment_filtered")
+		return nil
+	}
 
 	if notify.IsUserDirected(n.Event) {
 		proceed, release := d.dedupe.Claim(dedupKey(t.ID, n.Event, n.TaskID, n.EventUserID))

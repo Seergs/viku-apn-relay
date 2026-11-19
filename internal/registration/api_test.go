@@ -229,7 +229,7 @@ func TestUpdatePreferencesRejectsMalformedBody(t *testing.T) {
 func TestUpdatePreferencesRejectsOmittedOrNullField(t *testing.T) {
 	mux, store := newTestAPI(t)
 	resp := register(t, mux, registerBody)
-	if err := store.SetPreferences(resp.ID, resp.ManagementToken, true); err != nil {
+	if err := store.SetPreferences(resp.ID, resp.ManagementToken, PreferencesPatch{GroupOverdueNotifications: boolPointer(true)}); err != nil {
 		t.Fatalf("SetPreferences: %v", err)
 	}
 
@@ -273,5 +273,67 @@ func TestRegisterIsRateLimitedPerIP(t *testing.T) {
 	// A different client IP has its own budget.
 	if code := registerFrom("198.51.100.2:1234", "other-client"); code != http.StatusOK {
 		t.Fatalf("request from a different IP = %d, want 200", code)
+	}
+}
+
+func TestUpdatePreferencesPartialUpdates(t *testing.T) {
+	mux, store := newTestAPI(t)
+	first := register(t, mux, registerBody)
+	// Another account on the same device must keep its own defaults.
+	second := register(t, mux, strings.Replace(registerBody, `"account-key-1"`, `"account-key-2"`, 1))
+	if second.ID == first.ID {
+		t.Fatal("test accounts must be distinct")
+	}
+	for _, body := range []string{
+		`{"group_overdue_notifications":true,"assignment_notifications":"only_me"}`,
+		`{"group_overdue_notifications":false}`,
+		`{"assignment_notifications":"all"}`,
+		`{"assignment_notifications":"only_me"}`,
+	} {
+		rec := do(mux, http.MethodPatch, "/v1/registrations/"+first.ID+"/preferences", body, first.ManagementToken)
+		if rec.Code != http.StatusNoContent {
+			t.Fatalf("PATCH status = %d", rec.Code)
+		}
+		target, ok := store.Lookup(first.ID)
+		if !ok {
+			t.Fatal("Lookup failed")
+		}
+		switch body {
+		case `{"group_overdue_notifications":false}`:
+			if target.GroupOverdueNotifications || target.AssignmentNotifications != "only_me" {
+				t.Fatal("partial grouping update changed assignment preference")
+			}
+		case `{"assignment_notifications":"all"}`:
+			if target.GroupOverdueNotifications || target.AssignmentNotifications != "all" {
+				t.Fatal("partial assignment update changed grouping preference")
+			}
+		}
+	}
+	other, ok := store.Lookup(second.ID)
+	if !ok || other.GroupOverdueNotifications || other.AssignmentNotifications != "all" {
+		t.Fatal("preferences leaked between accounts")
+	}
+}
+
+func TestUpdatePreferencesRejectsInvalidAssignmentSettings(t *testing.T) {
+	mux, store := newTestAPI(t)
+	reg := register(t, mux, registerBody)
+	for _, body := range []string{
+		`{"assignment_notifications":"invalid"}`,
+		`{"assignment_notifications":""}`,
+		`{"assignment_notifications":true}`,
+		`{"assignment_notifications":null}`,
+		`{"group_overdue_notifications":true,"assignment_notifications":null}`,
+		`{"group_overdue_notifications":null,"assignment_notifications":"only_me"}`,
+		`{"group_overdue_notifications":true,"assignment_notifications":"invalid"}`,
+	} {
+		rec := do(mux, http.MethodPatch, "/v1/registrations/"+reg.ID+"/preferences", body, reg.ManagementToken)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("body %s: status = %d", body, rec.Code)
+		}
+		target, ok := store.Lookup(reg.ID)
+		if !ok || target.GroupOverdueNotifications || target.AssignmentNotifications != "all" {
+			t.Fatal("invalid update changed preferences")
+		}
 	}
 }

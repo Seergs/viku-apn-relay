@@ -4,6 +4,8 @@
 # `target` set. Bump RELAY_TAG here (via PR) to push a new build to stg;
 # doco-cd picks up the merge and redeploys.
 name: viku-apn-relay-stg
+pause: true
+reconciliation: false
 
 working_dir: deploy
 compose_files:

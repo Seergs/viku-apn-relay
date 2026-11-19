@@ -64,8 +64,18 @@ func (f *fakeSender) Send(_ context.Context, token string, payload []byte, colla
 }
 
 type fakeRemover struct {
-	err error
-	ids []string
+	preferenceRegistration string
+	preferenceProject      int64
+	assignmentMode         string
+	preferenceErr          error
+	err                    error
+	ids                    []string
+}
+
+func (f *fakeRemover) AssignmentNotifications(id string, projectID int64) (string, error) {
+	f.preferenceRegistration = id
+	f.preferenceProject = projectID
+	return f.assignmentMode, f.preferenceErr
 }
 
 func (f *fakeRemover) Remove(id string) error {
@@ -97,7 +107,7 @@ func newLogger(buf *bytes.Buffer) *slog.Logger {
 // the cache's eviction goroutine to stop when the test ends. Tests that
 // exercise dedup itself build their own Dispatcher with an explicit cache
 // instead of using this helper.
-func newDispatcher(t *testing.T, s Sender, r Remover, logger *slog.Logger) *Dispatcher {
+func newDispatcher(t *testing.T, s Sender, r RegistrationStore, logger *slog.Logger) *Dispatcher {
 	t.Helper()
 	c := dedup.New(time.Minute)
 	t.Cleanup(c.Close)
@@ -925,15 +935,45 @@ func TestDispatchAssignmentPreferences(t *testing.T) {
 			}
 			sender := &fakeSender{}
 			var logs bytes.Buffer
-			dispatcher := newDispatcher(t, sender, &fakeRemover{}, newLogger(&logs))
+			store := &fakeRemover{assignmentMode: tt.mode}
+			dispatcher := newDispatcher(t, sender, store, newLogger(&logs))
 			recipient := target(tt.user)
-			recipient.AssignmentNotifications = tt.mode
 			if err := dispatcher.Dispatch(recipient, body); err != nil {
 				t.Fatal(err)
 			}
 			if len(sender.payloads) != tt.want {
 				t.Fatalf("sent %d pushes, want %d", len(sender.payloads), tt.want)
 			}
+			if tt.event == notify.TaskAssigneeCreated && tt.actor != tt.user {
+				if store.preferenceRegistration != recipient.ID || store.preferenceProject != 1 {
+					t.Fatal("preference lookup must use the registration and the event's project")
+				}
+			}
+
 		})
+	}
+}
+
+func TestDispatchAssignmentPreferenceFailureAllowsRetry(t *testing.T) {
+	body, err := os.ReadFile("../webhook/testdata/task_assignee_created.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sender := &fakeSender{}
+	store := &fakeRemover{preferenceErr: errors.New("database unavailable")}
+	var logs bytes.Buffer
+	dispatcher := newDispatcher(t, sender, store, newLogger(&logs))
+	if err := dispatcher.Dispatch(target(2), body); err == nil {
+		t.Fatal("preference lookup failure must allow retry")
+	}
+	if len(sender.payloads) != 0 {
+		t.Fatal("sent push without resolving preferences")
+	}
+	store.preferenceErr = nil
+	if err := dispatcher.Dispatch(target(2), body); err != nil {
+		t.Fatal(err)
+	}
+	if len(sender.payloads) != 1 {
+		t.Fatal("retry did not send push")
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -46,6 +47,7 @@ func (a *API) Routes(mux *http.ServeMux) {
 	mux.Handle("POST /v1/registrations", a.registerLim.Middleware(http.HandlerFunc(a.register)))
 	mux.HandleFunc("DELETE /v1/registrations/{id}", a.unregister)
 	mux.HandleFunc("PATCH /v1/registrations/{id}/preferences", a.updatePreferences)
+	mux.HandleFunc("PATCH /v1/registrations/{id}/projects/{project_id}/preferences", a.updateProjectPreferences)
 }
 
 type registerRequest struct {
@@ -117,11 +119,6 @@ func (a *API) updatePreferences(w http.ResponseWriter, r *http.Request) {
 			if patch.GroupOverdueNotifications == nil {
 				err = ErrInvalid
 			}
-		case "assignment_notifications":
-			err = json.Unmarshal(value, &patch.AssignmentNotifications)
-			if patch.AssignmentNotifications == nil {
-				err = ErrInvalid
-			}
 		default:
 			err = ErrInvalid
 		}
@@ -131,6 +128,35 @@ func (a *API) updatePreferences(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	err := a.store.SetPreferences(r.PathValue("id"), bearer(r), patch)
+	if errors.Is(err, ErrUnauthorized) {
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+	if err != nil {
+		writeInternalOrInvalid(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// updateProjectPreferences changes settings for a single project in this registration.
+func (a *API) updateProjectPreferences(w http.ResponseWriter, r *http.Request) {
+	projectID, err := strconv.ParseInt(r.PathValue("project_id"), 10, 64)
+	if err != nil || projectID <= 0 {
+		http.Error(w, "project_id must be positive", http.StatusBadRequest)
+		return
+	}
+	var fields map[string]json.RawMessage
+	if !decode(w, r, &fields) {
+		return
+	}
+	var mode *string
+	value, ok := fields["assignment_notifications"]
+	if !ok || len(fields) != 1 || json.Unmarshal(value, &mode) != nil || mode == nil {
+		http.Error(w, "assignment_notifications is required", http.StatusBadRequest)
+		return
+	}
+	err = a.store.SetProjectPreferences(r.PathValue("id"), bearer(r), projectID, *mode)
 	if errors.Is(err, ErrUnauthorized) {
 		w.WriteHeader(http.StatusUnauthorized)
 		return

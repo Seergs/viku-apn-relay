@@ -265,7 +265,7 @@ func TestSetPreferencesIsReflectedByLookup(t *testing.T) {
 		t.Fatalf("Register: %v", err)
 	}
 
-	if err := s.SetPreferences(reg.ID, reg.ManagementToken, true); err != nil {
+	if err := s.SetPreferences(reg.ID, reg.ManagementToken, PreferencesPatch{GroupOverdueNotifications: boolPointer(true)}); err != nil {
 		t.Fatalf("SetPreferences: %v", err)
 	}
 	target, ok := s.Lookup(reg.ID)
@@ -273,7 +273,7 @@ func TestSetPreferencesIsReflectedByLookup(t *testing.T) {
 		t.Fatalf("Lookup after SetPreferences(true) = %+v, %v", target, ok)
 	}
 
-	if err := s.SetPreferences(reg.ID, reg.ManagementToken, false); err != nil {
+	if err := s.SetPreferences(reg.ID, reg.ManagementToken, PreferencesPatch{GroupOverdueNotifications: boolPointer(false)}); err != nil {
 		t.Fatalf("SetPreferences: %v", err)
 	}
 	target, ok = s.Lookup(reg.ID)
@@ -289,10 +289,10 @@ func TestSetPreferencesRejectsWrongTokenAndUnknownID(t *testing.T) {
 		t.Fatalf("Register: %v", err)
 	}
 
-	if err := s.SetPreferences(reg.ID, "wrong-token", true); !errors.Is(err, ErrUnauthorized) {
+	if err := s.SetPreferences(reg.ID, "wrong-token", PreferencesPatch{GroupOverdueNotifications: boolPointer(true)}); !errors.Is(err, ErrUnauthorized) {
 		t.Fatalf("SetPreferences with wrong token = %v, want ErrUnauthorized", err)
 	}
-	if err := s.SetPreferences("unknown-id", reg.ManagementToken, true); !errors.Is(err, ErrUnauthorized) {
+	if err := s.SetPreferences("unknown-id", reg.ManagementToken, PreferencesPatch{GroupOverdueNotifications: boolPointer(true)}); !errors.Is(err, ErrUnauthorized) {
 		t.Fatalf("SetPreferences with unknown id = %v, want ErrUnauthorized", err)
 	}
 	target, _ := s.Lookup(reg.ID)
@@ -311,7 +311,7 @@ func TestDeletingRegistrationCascadesItsPreferences(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
-	if err := s.SetPreferences(reg.ID, reg.ManagementToken, true); err != nil {
+	if err := s.SetPreferences(reg.ID, reg.ManagementToken, PreferencesPatch{GroupOverdueNotifications: boolPointer(true)}); err != nil {
 		t.Fatalf("SetPreferences: %v", err)
 	}
 
@@ -343,5 +343,39 @@ func TestOpenIsRepeatable(t *testing.T) {
 	defer func() { _ = second.Close() }()
 	if _, err := second.db.Exec(`SELECT 1 FROM registrations`); err != nil {
 		t.Fatalf("schema missing after reopen: %v", err)
+	}
+}
+
+func boolPointer(value bool) *bool { return &value }
+
+func TestAssignmentPreferencesSurviveReopenAndReregistration(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "relay.db")
+	store, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	reg, err := store.Register(newInput())
+	if err != nil {
+		t.Fatal(err)
+	}
+	mode := "only_me"
+	if err := store.SetPreferences(reg.ID, reg.ManagementToken, PreferencesPatch{AssignmentNotifications: &mode}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg, err = store.Register(newInput())
+	if err != nil {
+		t.Fatal(err)
+	}
+	target, ok := store.Lookup(reg.ID)
+	if !ok || target.AssignmentNotifications != mode || target.GroupOverdueNotifications {
+		t.Fatal("assignment preference was not preserved")
 	}
 }

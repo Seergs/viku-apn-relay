@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS registrations (
 CREATE TABLE IF NOT EXISTS preferences (
 	registration_id             TEXT    PRIMARY KEY REFERENCES registrations(id) ON DELETE CASCADE,
 	group_overdue_notifications INTEGER NOT NULL DEFAULT 0,
+	assignment_notifications    TEXT NOT NULL DEFAULT 'all' CHECK (assignment_notifications IN ('all', 'only_me')),
 	updated_at                  INTEGER NOT NULL
 );`
 
@@ -159,30 +160,49 @@ func (s *Store) Delete(id, managementToken string) error {
 func (s *Store) Lookup(id string) (webhook.Target, bool) {
 	var t webhook.Target
 	var groupOverdue sql.NullBool
+	var assignments sql.NullString
 	err := s.db.QueryRow(
-		`SELECT r.webhook_secret, r.vikunja_user_id, r.apns_token, r.account_key, p.group_overdue_notifications
+		`SELECT r.webhook_secret, r.vikunja_user_id, r.apns_token, r.account_key, p.group_overdue_notifications, p.assignment_notifications
 		FROM registrations r LEFT JOIN preferences p ON p.registration_id = r.id
 		WHERE r.id = ?`, id,
-	).Scan(&t.Secret, &t.VikunjaUserID, &t.APNsToken, &t.AccountKey, &groupOverdue)
+	).Scan(&t.Secret, &t.VikunjaUserID, &t.APNsToken, &t.AccountKey, &groupOverdue, &assignments)
 	if err != nil {
 		return webhook.Target{}, false
+	}
+	t.AssignmentNotifications = "all"
+	if assignments.Valid {
+		t.AssignmentNotifications = assignments.String
 	}
 	t.ID = id
 	t.GroupOverdueNotifications = groupOverdue.Valid && groupOverdue.Bool
 	return t, true
 }
 
-// SetPreferences updates the preferences row for id after checking the
-// management token, creating it if this is the first preference ever set
-// for that registration.
-func (s *Store) SetPreferences(id, managementToken string, groupOverdueNotifications bool) error {
+// PreferencesPatch changes only the fields supplied by the caller.
+type PreferencesPatch struct {
+	GroupOverdueNotifications *bool
+	AssignmentNotifications   *string
+}
+
+// SetPreferences authorizes and atomically updates the supplied preferences.
+func (s *Store) SetPreferences(id, managementToken string, patch PreferencesPatch) error {
 	if err := s.authorize(id, managementToken); err != nil {
 		return err
 	}
-	_, err := s.db.Exec(`INSERT INTO preferences (registration_id, group_overdue_notifications, updated_at)
-		VALUES (?, ?, ?)
-		ON CONFLICT(registration_id) DO UPDATE SET group_overdue_notifications = excluded.group_overdue_notifications, updated_at = excluded.updated_at`,
-		id, groupOverdueNotifications, s.now().Unix())
+	if patch.GroupOverdueNotifications == nil && patch.AssignmentNotifications == nil {
+		return invalidf("at least one preference is required")
+	}
+	if patch.AssignmentNotifications != nil && *patch.AssignmentNotifications != "all" && *patch.AssignmentNotifications != "only_me" {
+		return invalidf("assignment_notifications must be all or only_me")
+	}
+	_, err := s.db.Exec(`INSERT INTO preferences (registration_id, group_overdue_notifications, assignment_notifications, updated_at)
+ VALUES (?, COALESCE(?, 0), COALESCE(?, 'all'), ?)
+ ON CONFLICT(registration_id) DO UPDATE SET
+ group_overdue_notifications = COALESCE(?, preferences.group_overdue_notifications),
+ assignment_notifications = COALESCE(?, preferences.assignment_notifications),
+ updated_at = excluded.updated_at`,
+		id, patch.GroupOverdueNotifications, patch.AssignmentNotifications, s.now().Unix(),
+		patch.GroupOverdueNotifications, patch.AssignmentNotifications)
 	if err != nil {
 		return fmt.Errorf("write preferences: %w", err)
 	}

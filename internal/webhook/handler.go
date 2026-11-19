@@ -22,6 +22,8 @@ type Target struct {
 	// combined push for a tasks.overdue digest instead of fanning it out
 	// into one push per task.
 	GroupOverdueNotifications bool
+	// AssignmentNotifications is all or only_me; empty retains the all behavior.
+	AssignmentNotifications string
 }
 
 // Registrations maps an opaque registration id to its delivery target.

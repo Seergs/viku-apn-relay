@@ -885,3 +885,55 @@ func TestBodyUnknownEventFallsBackToTaskTitle(t *testing.T) {
 		t.Fatalf("Body = %q, want the raw task title as a last resort", got)
 	}
 }
+
+func TestDispatchAssignmentPreferences(t *testing.T) {
+	fixture, err := os.ReadFile("../webhook/testdata/task_assignee_created.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tt := range []struct {
+		name, mode, event     string
+		user, actor, assignee int64
+		want                  int
+	}{
+		{"default includes others", "", notify.TaskAssigneeCreated, 3, 2, 1, 1},
+		{"all includes others", "all", notify.TaskAssigneeCreated, 3, 2, 1, 1},
+		{"only me includes mine", "only_me", notify.TaskAssigneeCreated, 1, 2, 1, 1},
+		{"only me excludes others", "only_me", notify.TaskAssigneeCreated, 3, 2, 1, 0},
+		{"only me excludes missing assignee", "only_me", notify.TaskAssigneeCreated, 1, 2, 0, 0},
+		{"all drops own actions", "all", notify.TaskAssigneeCreated, 1, 1, 1, 0},
+		{"only me drops own actions", "only_me", notify.TaskAssigneeCreated, 1, 1, 1, 0},
+		{"unassignments are unaffected", "only_me", notify.TaskAssigneeDeleted, 3, 2, 1, 1},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var event map[string]any
+			if err := json.Unmarshal(fixture, &event); err != nil {
+				t.Fatal(err)
+			}
+			// Vary identities in the recorded delivery to exercise recipient filtering.
+			event["event_name"] = tt.event
+			data := event["data"].(map[string]any)
+			data["doer"].(map[string]any)["id"] = tt.actor
+			if tt.assignee == 0 {
+				delete(data, "assignee")
+			} else {
+				data["assignee"].(map[string]any)["id"] = tt.assignee
+			}
+			body, err := json.Marshal(event)
+			if err != nil {
+				t.Fatal(err)
+			}
+			sender := &fakeSender{}
+			var logs bytes.Buffer
+			dispatcher := newDispatcher(t, sender, &fakeRemover{}, newLogger(&logs))
+			recipient := target(tt.user)
+			recipient.AssignmentNotifications = tt.mode
+			if err := dispatcher.Dispatch(recipient, body); err != nil {
+				t.Fatal(err)
+			}
+			if len(sender.payloads) != tt.want {
+				t.Fatalf("sent %d pushes, want %d", len(sender.payloads), tt.want)
+			}
+		})
+	}
+}

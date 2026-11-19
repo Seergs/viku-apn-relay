@@ -102,29 +102,35 @@ func (a *API) unregister(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// GroupOverdueNotifications is a pointer so a missing (or explicit null)
-// field is distinguishable from an explicit false — Go's bool zero value
-// would otherwise silently turn grouping off for a client that sends an
-// empty or malformed body, with no error to catch it.
-type updatePreferencesRequest struct {
-	GroupOverdueNotifications *bool `json:"group_overdue_notifications"`
-}
-
-// updatePreferences sets the registration's preferences, authorized by the
-// management token like unregister. Unlike POST /v1/registrations, this is
-// not a device registration: it takes effect immediately and never touches
-// apns_token, webhook_secret, or any other registration identity field.
+// updatePreferences changes only supplied fields. Explicit null is invalid.
 func (a *API) updatePreferences(w http.ResponseWriter, r *http.Request) {
-	var req updatePreferencesRequest
-	if !decode(w, r, &req) {
+	var fields map[string]json.RawMessage
+	if !decode(w, r, &fields) {
 		return
 	}
-	if req.GroupOverdueNotifications == nil {
-		http.Error(w, "group_overdue_notifications is required", http.StatusBadRequest)
-		return
+	var patch PreferencesPatch
+	for name, value := range fields {
+		var err error
+		switch name {
+		case "group_overdue_notifications":
+			err = json.Unmarshal(value, &patch.GroupOverdueNotifications)
+			if patch.GroupOverdueNotifications == nil {
+				err = ErrInvalid
+			}
+		case "assignment_notifications":
+			err = json.Unmarshal(value, &patch.AssignmentNotifications)
+			if patch.AssignmentNotifications == nil {
+				err = ErrInvalid
+			}
+		default:
+			err = ErrInvalid
+		}
+		if err != nil {
+			http.Error(w, "invalid preference", http.StatusBadRequest)
+			return
+		}
 	}
-
-	err := a.store.SetPreferences(r.PathValue("id"), bearer(r), *req.GroupOverdueNotifications)
+	err := a.store.SetPreferences(r.PathValue("id"), bearer(r), patch)
 	if errors.Is(err, ErrUnauthorized) {
 		w.WriteHeader(http.StatusUnauthorized)
 		return

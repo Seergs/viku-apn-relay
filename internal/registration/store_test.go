@@ -303,7 +303,7 @@ func TestSetPreferencesRejectsWrongTokenAndUnknownID(t *testing.T) {
 
 // TestDeletingRegistrationCascadesItsPreferences exercises the "PRAGMA
 // foreign_keys = ON" set in Open: deleting a registration must take its
-// preferences row with it, with no explicit DELETE FROM preferences in
+// preferences row with it, with no explicit preference deletion in
 // application code.
 func TestDeletingRegistrationCascadesItsPreferences(t *testing.T) {
 	s := openTestStore(t)
@@ -320,7 +320,7 @@ func TestDeletingRegistrationCascadesItsPreferences(t *testing.T) {
 	}
 
 	var n int
-	if err := s.db.QueryRow(`SELECT COUNT(*) FROM preferences`).Scan(&n); err != nil {
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM registration_preferences`).Scan(&n); err != nil {
 		t.Fatalf("count preferences: %v", err)
 	}
 	if n != 0 {
@@ -360,7 +360,7 @@ func TestAssignmentPreferencesSurviveReopenAndReregistration(t *testing.T) {
 		t.Fatal(err)
 	}
 	mode := "only_me"
-	if err := store.SetPreferences(reg.ID, reg.ManagementToken, PreferencesPatch{AssignmentNotifications: &mode}); err != nil {
+	if err := store.SetProjectPreferences(reg.ID, reg.ManagementToken, 5, mode); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Close(); err != nil {
@@ -374,8 +374,38 @@ func TestAssignmentPreferencesSurviveReopenAndReregistration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	target, ok := store.Lookup(reg.ID)
-	if !ok || target.AssignmentNotifications != mode || target.GroupOverdueNotifications {
+	actual, err := store.AssignmentNotifications(reg.ID, 5)
+	if err != nil || actual != mode {
 		t.Fatal("assignment preference was not preserved")
+	}
+}
+
+func TestDeletingRegistrationCascadesProjectPreferences(t *testing.T) {
+	for _, remove := range []string{"delete", "apns unregistered"} {
+		t.Run(remove, func(t *testing.T) {
+			store := openTestStore(t)
+			reg, err := store.Register(newInput())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := store.SetProjectPreferences(reg.ID, reg.ManagementToken, 5, "only_me"); err != nil {
+				t.Fatal(err)
+			}
+			if remove == "delete" {
+				err = store.Delete(reg.ID, reg.ManagementToken)
+			} else {
+				err = store.Remove(reg.ID)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			var count int
+			if err := store.db.QueryRow(`SELECT COUNT(*) FROM project_preferences`).Scan(&count); err != nil {
+				t.Fatal(err)
+			}
+			if count != 0 {
+				t.Fatal("project preferences outlived registration")
+			}
+		})
 	}
 }

@@ -276,64 +276,59 @@ func TestRegisterIsRateLimitedPerIP(t *testing.T) {
 	}
 }
 
-func TestUpdatePreferencesPartialUpdates(t *testing.T) {
+func TestProjectPreferencesScope(t *testing.T) {
 	mux, store := newTestAPI(t)
 	first := register(t, mux, registerBody)
-	// Another account on the same device must keep its own defaults.
 	second := register(t, mux, strings.Replace(registerBody, `"account-key-1"`, `"account-key-2"`, 1))
-	if second.ID == first.ID {
-		t.Fatal("test accounts must be distinct")
+	patch := func(id, path, body, token string, want int) {
+		t.Helper()
+		rec := do(mux, http.MethodPatch, "/v1/registrations/"+id+path, body, token)
+		if rec.Code != want {
+			t.Fatalf("PATCH %s: status %d, want %d", path, rec.Code, want)
+		}
 	}
-	for _, body := range []string{
-		`{"group_overdue_notifications":true,"assignment_notifications":"only_me"}`,
-		`{"group_overdue_notifications":false}`,
-		`{"assignment_notifications":"all"}`,
-		`{"assignment_notifications":"only_me"}`,
+	projectPath := "/projects/5/preferences"
+	patch(first.ID, "/preferences", `{"group_overdue_notifications":true}`, first.ManagementToken, 204)
+	patch(first.ID, projectPath, `{"assignment_notifications":"only_me"}`, first.ManagementToken, 204)
+	for _, tt := range []struct {
+		id      string
+		project int64
+		want    string
+	}{
+		{first.ID, 5, "only_me"}, {first.ID, 6, "all"}, {second.ID, 5, "all"},
 	} {
-		rec := do(mux, http.MethodPatch, "/v1/registrations/"+first.ID+"/preferences", body, first.ManagementToken)
-		if rec.Code != http.StatusNoContent {
-			t.Fatalf("PATCH status = %d", rec.Code)
-		}
-		target, ok := store.Lookup(first.ID)
-		if !ok {
-			t.Fatal("Lookup failed")
-		}
-		switch body {
-		case `{"group_overdue_notifications":false}`:
-			if target.GroupOverdueNotifications || target.AssignmentNotifications != "only_me" {
-				t.Fatal("partial grouping update changed assignment preference")
-			}
-		case `{"assignment_notifications":"all"}`:
-			if target.GroupOverdueNotifications || target.AssignmentNotifications != "all" {
-				t.Fatal("partial assignment update changed grouping preference")
-			}
+		mode, err := store.AssignmentNotifications(tt.id, tt.project)
+		if err != nil || mode != tt.want {
+			t.Fatalf("mode = %s, error %v, want %s", mode, err, tt.want)
 		}
 	}
-	other, ok := store.Lookup(second.ID)
-	if !ok || other.GroupOverdueNotifications || other.AssignmentNotifications != "all" {
-		t.Fatal("preferences leaked between accounts")
+	patch(first.ID, "/preferences", `{"group_overdue_notifications":false}`, first.ManagementToken, 204)
+	mode, err := store.AssignmentNotifications(first.ID, 5)
+	if err != nil || mode != "only_me" {
+		t.Fatal("registration update changed project preference")
 	}
-}
-
-func TestUpdatePreferencesRejectsInvalidAssignmentSettings(t *testing.T) {
-	mux, store := newTestAPI(t)
-	reg := register(t, mux, registerBody)
-	for _, body := range []string{
-		`{"assignment_notifications":"invalid"}`,
-		`{"assignment_notifications":""}`,
-		`{"assignment_notifications":true}`,
-		`{"assignment_notifications":null}`,
-		`{"group_overdue_notifications":true,"assignment_notifications":null}`,
-		`{"group_overdue_notifications":null,"assignment_notifications":"only_me"}`,
-		`{"group_overdue_notifications":true,"assignment_notifications":"invalid"}`,
-	} {
-		rec := do(mux, http.MethodPatch, "/v1/registrations/"+reg.ID+"/preferences", body, reg.ManagementToken)
-		if rec.Code != http.StatusBadRequest {
-			t.Fatalf("body %s: status = %d", body, rec.Code)
-		}
-		target, ok := store.Lookup(reg.ID)
-		if !ok || target.GroupOverdueNotifications || target.AssignmentNotifications != "all" {
-			t.Fatal("invalid update changed preferences")
-		}
+	patch(first.ID, "/preferences", `{"group_overdue_notifications":true}`, first.ManagementToken, 204)
+	patch(first.ID, projectPath, `{"assignment_notifications":"all"}`, first.ManagementToken, 204)
+	target, ok := store.Lookup(first.ID)
+	if !ok || !target.GroupOverdueNotifications {
+		t.Fatal("project update changed registration preference")
+	}
+	mode, err = store.AssignmentNotifications(first.ID, 5)
+	if err != nil || mode != "all" {
+		t.Fatal("could not reset project preference")
+	}
+	patch(first.ID, projectPath, `{"assignment_notifications":"only_me"}`, second.ManagementToken, 401)
+	patch(first.ID, projectPath, `{"assignment_notifications":"only_me"}`, "", 401)
+	patch("unknown", projectPath, `{"assignment_notifications":"only_me"}`, first.ManagementToken, 401)
+	for _, body := range []string{`{}`, `null`, `{`, `{"assignment_notifications":null}`, `{"assignment_notifications":true}`, `{"assignment_notifications":""}`, `{"assignment_notifications":"invalid"}`, `{"assignment_notifications":"only_me","group_overdue_notifications":true}`} {
+		patch(first.ID, projectPath, body, first.ManagementToken, 400)
+	}
+	for _, project := range []string{"0", "-1", "invalid", "9223372036854775808"} {
+		patch(first.ID, "/projects/"+project+"/preferences", `{"assignment_notifications":"only_me"}`, first.ManagementToken, 400)
+	}
+	patch(first.ID, "/preferences", `{"assignment_notifications":"only_me"}`, first.ManagementToken, 400)
+	mode, err = store.AssignmentNotifications(first.ID, 5)
+	if err != nil || mode != "all" {
+		t.Fatal("rejected update changed project preference")
 	}
 }

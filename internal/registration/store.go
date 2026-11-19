@@ -27,7 +27,7 @@ CREATE TABLE IF NOT EXISTS registrations (
 	updated_at            INTEGER NOT NULL
 );
 
--- preferences holds per-registration settings that are not part of a
+-- registration_preferences holds per-registration settings that are not part of a
 -- device's identity (unlike registrations), so they live in their own
 -- table instead of adding columns there. A row only exists once a
 -- preference has been explicitly set; a missing row means every
@@ -35,18 +35,24 @@ CREATE TABLE IF NOT EXISTS registrations (
 -- relies on the "PRAGMA foreign_keys = ON" set via Open's DSN, so a
 -- registration's preferences never outlive the registration itself
 -- without a matching DELETE in application code.
-CREATE TABLE IF NOT EXISTS preferences (
+CREATE TABLE IF NOT EXISTS registration_preferences (
 	registration_id             TEXT    PRIMARY KEY REFERENCES registrations(id) ON DELETE CASCADE,
 	group_overdue_notifications INTEGER NOT NULL DEFAULT 0,
-	assignment_notifications    TEXT NOT NULL DEFAULT 'all' CHECK (assignment_notifications IN ('all', 'only_me')),
 	updated_at                  INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS project_preferences (
+	registration_id TEXT NOT NULL REFERENCES registrations(id) ON DELETE CASCADE,
+	project_id INTEGER NOT NULL CHECK (project_id > 0),
+	assignment_notifications TEXT NOT NULL DEFAULT 'all' CHECK (assignment_notifications IN ('all', 'only_me')),
+	updated_at INTEGER NOT NULL,
+	PRIMARY KEY (registration_id, project_id)
 );`
 
 // ErrUnauthorized reports a missing or wrong management token, or an unknown id.
 var ErrUnauthorized = errors.New("unauthorized")
 
-// Store persists registrations in SQLite. It is the only place registration
-// rows are read or written.
+// Store persists registrations and notification preferences in SQLite.
 type Store struct {
 	db  *sql.DB
 	now func() time.Time
@@ -160,18 +166,13 @@ func (s *Store) Delete(id, managementToken string) error {
 func (s *Store) Lookup(id string) (webhook.Target, bool) {
 	var t webhook.Target
 	var groupOverdue sql.NullBool
-	var assignments sql.NullString
 	err := s.db.QueryRow(
-		`SELECT r.webhook_secret, r.vikunja_user_id, r.apns_token, r.account_key, p.group_overdue_notifications, p.assignment_notifications
-		FROM registrations r LEFT JOIN preferences p ON p.registration_id = r.id
+		`SELECT r.webhook_secret, r.vikunja_user_id, r.apns_token, r.account_key, p.group_overdue_notifications
+		FROM registrations r LEFT JOIN registration_preferences p ON p.registration_id = r.id
 		WHERE r.id = ?`, id,
-	).Scan(&t.Secret, &t.VikunjaUserID, &t.APNsToken, &t.AccountKey, &groupOverdue, &assignments)
+	).Scan(&t.Secret, &t.VikunjaUserID, &t.APNsToken, &t.AccountKey, &groupOverdue)
 	if err != nil {
 		return webhook.Target{}, false
-	}
-	t.AssignmentNotifications = "all"
-	if assignments.Valid {
-		t.AssignmentNotifications = assignments.String
 	}
 	t.ID = id
 	t.GroupOverdueNotifications = groupOverdue.Valid && groupOverdue.Bool
@@ -181,7 +182,6 @@ func (s *Store) Lookup(id string) (webhook.Target, bool) {
 // PreferencesPatch changes only the fields supplied by the caller.
 type PreferencesPatch struct {
 	GroupOverdueNotifications *bool
-	AssignmentNotifications   *string
 }
 
 // SetPreferences authorizes and atomically updates the supplied preferences.
@@ -189,24 +189,52 @@ func (s *Store) SetPreferences(id, managementToken string, patch PreferencesPatc
 	if err := s.authorize(id, managementToken); err != nil {
 		return err
 	}
-	if patch.GroupOverdueNotifications == nil && patch.AssignmentNotifications == nil {
-		return invalidf("at least one preference is required")
+	if patch.GroupOverdueNotifications == nil {
+		return invalidf("group_overdue_notifications is required")
 	}
-	if patch.AssignmentNotifications != nil && *patch.AssignmentNotifications != "all" && *patch.AssignmentNotifications != "only_me" {
-		return invalidf("assignment_notifications must be all or only_me")
-	}
-	_, err := s.db.Exec(`INSERT INTO preferences (registration_id, group_overdue_notifications, assignment_notifications, updated_at)
- VALUES (?, COALESCE(?, 0), COALESCE(?, 'all'), ?)
+	_, err := s.db.Exec(`INSERT INTO registration_preferences (registration_id, group_overdue_notifications, updated_at)
+ VALUES (?, ?, ?)
  ON CONFLICT(registration_id) DO UPDATE SET
- group_overdue_notifications = COALESCE(?, preferences.group_overdue_notifications),
- assignment_notifications = COALESCE(?, preferences.assignment_notifications),
- updated_at = excluded.updated_at`,
-		id, patch.GroupOverdueNotifications, patch.AssignmentNotifications, s.now().Unix(),
-		patch.GroupOverdueNotifications, patch.AssignmentNotifications)
+ group_overdue_notifications = excluded.group_overdue_notifications,
+ updated_at = excluded.updated_at`, id, *patch.GroupOverdueNotifications, s.now().Unix())
 	if err != nil {
 		return fmt.Errorf("write preferences: %w", err)
 	}
 	return nil
+}
+
+// SetProjectPreferences updates assignment notifications for one registration and project.
+func (s *Store) SetProjectPreferences(id, managementToken string, projectID int64, mode string) error {
+	if err := s.authorize(id, managementToken); err != nil {
+		return err
+	}
+	if projectID <= 0 {
+		return invalidf("project_id must be positive")
+	}
+	if mode != "all" && mode != "only_me" {
+		return invalidf("assignment_notifications must be all or only_me")
+	}
+	_, err := s.db.Exec(`INSERT INTO project_preferences (registration_id, project_id, assignment_notifications, updated_at)
+ VALUES (?, ?, ?, ?)
+ ON CONFLICT(registration_id, project_id) DO UPDATE SET
+ assignment_notifications = excluded.assignment_notifications, updated_at = excluded.updated_at`, id, projectID, mode, s.now().Unix())
+	if err != nil {
+		return fmt.Errorf("write project preferences: %w", err)
+	}
+	return nil
+}
+
+// AssignmentNotifications returns the project's mode, defaulting to all without an override.
+func (s *Store) AssignmentNotifications(id string, projectID int64) (string, error) {
+	var mode string
+	err := s.db.QueryRow(`SELECT assignment_notifications FROM project_preferences WHERE registration_id = ? AND project_id = ?`, id, projectID).Scan(&mode)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "all", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("read project preferences: %w", err)
+	}
+	return mode, nil
 }
 
 // Remove deletes the registration without a management token. Only the push

@@ -133,27 +133,42 @@ Requires `Authorization: Bearer <management_token>`. Returns 204 on success.
 Preferences apply only to this registration (the app's saved account connection).
 
 ```json
-{
-  "group_overdue_notifications": true,
-  "assignment_notifications": "only_me"
-}
+{"group_overdue_notifications": true}
 ```
 
-Send either field or both. Omitted fields keep their current values. Empty updates,
-unknown fields, null values, incorrect types, and invalid assignment modes return 400.
-Invalid or missing management tokens return 401.
+`group_overdue_notifications` defaults to false; true combines a `tasks.overdue`
+digest into one push instead of one push per task. This endpoint does not accept
+project preferences.
 
-- `group_overdue_notifications`: defaults to false; true combines a `tasks.overdue`
-  digest into one push instead of one push per task.
-- `assignment_notifications`: defaults to `all`; `only_me` sends
-  `task.assignee.created` only when `data.assignee.id` matches the registration's
-  `vikunja_user_id`. Missing assignee IDs are dropped in this mode. Other events,
-  including `task.assignee.deleted`, are unaffected. Self-caused project events
-  are still dropped in both modes.
+### `PATCH /v1/registrations/{id}/projects/{project_id}/preferences`
 
-Preferences persist in the SQLite `preferences` table, keyed by `registration_id`.
-They survive re-registration with the same `account_key` and are deleted with the
-registration.
+Requires the registration's `Authorization: Bearer <management_token>`.
+Returns 204 on success. The project ID must be a positive integer.
+
+```json
+{"assignment_notifications": "only_me"}
+```
+
+`assignment_notifications` defaults to `all` when no project preference exists.
+`only_me` sends `task.assignee.created` only when `data.assignee.id` matches the
+registration's `vikunja_user_id`. Missing assignee IDs are dropped in this mode.
+Other events, including `task.assignee.deleted`, are unaffected. Self-caused
+project events are still dropped in both modes. Send `all` to restore the default.
+
+Each project setting is scoped by both registration ID and project ID. Projects
+with the same numeric ID in different accounts have independent preferences.
+Project settings do not change overdue grouping, and registration settings do not
+change project settings.
+
+Both preference endpoints reject empty updates, unknown fields, null values,
+incorrect types, and invalid values with 400. Invalid or missing management tokens
+return 401 for otherwise valid requests. The relay does not verify project
+membership against Vikunja.
+
+Preferences persist in SQLite: `registration_preferences` is keyed by
+`registration_id`; `project_preferences` is keyed by `(registration_id, project_id)`.
+Both survive re-registration with the same `account_key` and are deleted with the
+registration. No task content or project names are stored.
 
 ### `GET /privacy`
 
@@ -162,7 +177,7 @@ Serves the relay's privacy statement as a static HTML page, embedded in the bina
 
 ## Storage
 
-Only registration data is stored. Payloads, task titles, project names and comment text are
+Only registration data and notification preferences are stored. Payloads, task titles, project names and comment text are
 never written to the database or to logs.
 
 Table `registrations`:

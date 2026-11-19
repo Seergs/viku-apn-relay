@@ -68,27 +68,28 @@ type Sender interface {
 	Send(ctx context.Context, deviceToken string, payload []byte, collapseID string) error
 }
 
-// Remover deletes a registration by its opaque id.
-type Remover interface {
+// RegistrationStore supplies project settings and removes unregistered devices.
+type RegistrationStore interface {
 	Remove(id string) error
+	AssignmentNotifications(id string, projectID int64) (string, error)
 }
 
 // Dispatcher maps a delivery to a push and sends it. Logs carry status codes
 // and outcomes only, never the payload or the device token.
 type Dispatcher struct {
-	sender  Sender
-	remover Remover
-	log     *slog.Logger
-	dedupe  *dedup.Cache
+	sender Sender
+	store  RegistrationStore
+	log    *slog.Logger
+	dedupe *dedup.Cache
 }
 
 // NewDispatcher returns a Dispatcher that sends through sender and removes
-// registrations through remover. dedupe collapses a delivery the relay
+// registrations through store. dedupe collapses a delivery the relay
 // already pushed, or is already in the middle of pushing, for the same
 // registration/event/task/user within its window. See the dedup package
 // doc for why that happens even for a single Vikunja event.
-func NewDispatcher(sender Sender, remover Remover, logger *slog.Logger, dedupe *dedup.Cache) *Dispatcher {
-	return &Dispatcher{sender: sender, remover: remover, log: logger, dedupe: dedupe}
+func NewDispatcher(sender Sender, store RegistrationStore, logger *slog.Logger, dedupe *dedup.Cache) *Dispatcher {
+	return &Dispatcher{sender: sender, store: store, log: logger, dedupe: dedupe}
 }
 
 // dedupKey identifies one real-world occurrence of event for task within
@@ -131,10 +132,15 @@ func (d *Dispatcher) Dispatch(t webhook.Target, body []byte) (err error) {
 		d.log.Info("delivery not pushed", "outcome", "dropped")
 		return nil
 	}
-	if n.Event == notify.TaskAssigneeCreated && t.AssignmentNotifications == "only_me" &&
-		(n.AssigneeID <= 0 || n.AssigneeID != t.VikunjaUserID) {
-		d.log.Info("delivery not pushed", "outcome", "assignment_filtered")
-		return nil
+	if n.Event == notify.TaskAssigneeCreated {
+		mode, err := d.store.AssignmentNotifications(t.ID, n.ProjectID)
+		if err != nil {
+			return err
+		}
+		if mode == "only_me" && (n.AssigneeID <= 0 || n.AssigneeID != t.VikunjaUserID) {
+			d.log.Info("delivery not pushed", "outcome", "assignment_filtered")
+			return nil
+		}
 	}
 
 	if notify.IsUserDirected(n.Event) {
@@ -254,7 +260,7 @@ func (d *Dispatcher) send(ctx context.Context, t webhook.Target, payload []byte,
 		d.log.Info("push sent", "status", 200)
 		return false, nil
 	case errors.Is(sendErr, apns.ErrUnregistered):
-		if rerr := d.remover.Remove(t.ID); rerr != nil {
+		if rerr := d.store.Remove(t.ID); rerr != nil {
 			d.log.Error("remove unregistered registration", "error", rerr)
 			return true, rerr
 		}
